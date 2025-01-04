@@ -245,7 +245,7 @@ const cdsScaper = async (page, allNews, userInputs) => {
     // Eseguo il login sulla fonte delle notizie
     await loginCds(page, userInputs);
 
-    for (let i = 1; i == 35; i++) {
+    for (let i = 1; i <= 34; i++) {
         // Definisco l'URL per la fonte di notizie
         const url = `https://www.corriere.it/ricerca/?q=${userInputs.query}&page=${i}`;
 
@@ -259,6 +259,8 @@ const cdsScaper = async (page, allNews, userInputs) => {
         const links = await page.$$eval('.bck-media-news-signature h3 a', anchors =>
             anchors.map(anchor => anchor.href)
         );
+        
+        const errors = [];
 
         for (const link of links) {
             try {
@@ -287,7 +289,9 @@ const cdsScaper = async (page, allNews, userInputs) => {
                 console.log('\x1b[32m%s\x1b[0m', `Articolo aggiunto: ${title}`);
 
             } catch (error) {
-                console.warn(`Errore nell'estrazione dell'articolo: ${link}`, error.message);
+                const errorMessage = `Errore nell'estrazione dell'articolo: ${link}`, error.message;
+                errors.push(errorMessage)
+                console.warn(errorMessage);
             }
             await sleep(5000);
         }
@@ -339,6 +343,11 @@ const liberoScraper = async (page, allNews) => {
         // Salva tutti i dati raccolti in un unico CSV
         await csvWriter.writeRecords(allNews);
         console.log('Dati salvati con successo in "notizie.csv".');
+
+        console.log('Articoli andati in errore: ', errors.length);
+        if (errors.length > 0) {
+            console.warn(errors);
+        }
 
         // Chiudi il browser
         await browser.close();
