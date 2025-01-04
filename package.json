@@ -1,0 +1,16 @@
+{
+  "name": "journal-scraper",
+  "version": "1.0.0",
+  "description": "Node JS Script for Journal Scraping",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Elisa Fiorani",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "csv-writer": "^1.6.0",
+    "puppeteer": "^23.11.1",
+    "sanitize-html": "^2.14.0"
+  }
+}
