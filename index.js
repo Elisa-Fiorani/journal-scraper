@@ -289,7 +289,7 @@ const cdsScaper = async (page, allNews, userInputs) => {
                 console.log('\x1b[32m%s\x1b[0m', `Articolo aggiunto: ${title}`);
 
             } catch (error) {
-                const errorMessage = `Errore nell'estrazione dell'articolo: ${link}`, error.message;
+                const errorMessage = `Errore nell'estrazione dell'articolo: ${link} - ${error.message}`;
                 errors.push(errorMessage)
                 console.warn(errorMessage);
             }
