@@ -77,7 +77,7 @@ const getTitle = async (page) => {
             try {
 
                 // Aspetta che il selettore sia presente
-                await page.waitForSelector(selector, { timeout: 1000 });
+                await page.waitForSelector(selector, { timeout: 2000 });
         
                 // Ritorna il titolo estratto
                 const title = await page.$eval(selector, el => el.textContent.trim());
@@ -97,7 +97,7 @@ const getDates = async (page) => {
 
         try {
             // Aspetta che il selettore sia presente
-            await page.waitForSelector(selector, { timeout: 1000 });
+            await page.waitForSelector(selector, { timeout: 2000 });
 
             let date;
             switch (selector) {
@@ -238,7 +238,7 @@ const loginCds = async (page, userInputs) => {
     } catch {
         console.error('Login su "Corriere della Sera" non riuscito o timeout raggiunto.');
     }
-    await sleep(5000); // Pausa tra le pagine
+    await sleep(3000); // Pausa tra le pagine
 };
 
 // Funzione per aggiungere un timeout
@@ -295,17 +295,16 @@ const cdsScaper = async (page, userInputs) => {
                 // Estrarre i dettagli dell'articolo
                 const title = await getTitle(page);
                 const { published, updated } = await getDates(page);
+                const date = updated || published;
                 const text = await getText(page);
                 const event = determineEvent(userInputs.query);
-
 
                 // Aggiungi i dati estratti all'array globale
                 cdsScraperNews.push({
                     id: cdsScraperNews.length + 1,
                     journal: 'cds',
                     event,
-                    published,
-                    updated,
+                    date,
                     title: sanitizeHtml(title),
                     text: sanitizeHtml(text),
                     link
@@ -318,11 +317,10 @@ const cdsScaper = async (page, userInputs) => {
                 cdsScraperErrors.push(errorMessage)
                 console.warn(errorMessage);
             }
-            await sleep(5000);
+            await sleep(3000);
         }
 
         console.log(`Pagina ${i} processata con successo.`);
-        await sleep(5000); // Pausa tra le pagine
         return { cdsScraperNews, cdsScraperErrors };
     }
 };
@@ -362,8 +360,7 @@ const liberoScraper = async (page) => {
                 { id: 'id', title: '*ID_' },
                 { id: 'journal', title: '*TIPOQ_' },
                 { id: 'event', title: '*CASO_' },
-                { id: 'published', title: '*DATAPUB_' },
-                { id: 'updated', title: '*DATAAGG_'},
+                { id: 'data', title: '*DATA_'},
                 { id: 'title', title: '*TITOLO_' },
                 { id: 'text', title: '*TXT_' },
                 { id: 'link', title: '*LINK_' },
