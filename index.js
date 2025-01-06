@@ -13,9 +13,9 @@ const consoleInfo = (message) => {
 
 // Funzione per raccogliere input in un oggetto
 const collectUserInputs = async () => {
-    console.log('>> Inserisci le credenziali di login per "Corriere della Sera".');
-    const cdsEmail = await askQuestion('>> Email: ');
-    const cdsPassword = await askHiddenInput('>> Password: ');
+    // console.log('>> Inserisci le credenziali di login per "Corriere della Sera".');
+    // const cdsEmail = await askQuestion('>> Email: ');
+    // const cdsPassword = await askHiddenInput('>> Password: ');
     console.log('>> Inserisci le credenziali di login per "La Repubblica".');
     const repubblicaEmail = await askQuestion('>> Email: ');
     const repubblicaPassword = await askHiddenInput('>> Password: ');
@@ -23,8 +23,8 @@ const collectUserInputs = async () => {
     const query = (await askQuestion('>> Query di Ricerca: ')).toLowerCase();
 
     return {
-        cdsEmail,
-        cdsPassword,
+        // cdsEmail,
+        // cdsPassword,
         repubblicaEmail,
         repubblicaPassword,
         query,
@@ -239,7 +239,7 @@ const determineEvent = (query) => {
 };
 
 
-// Funzione per gestire il login su Corriere
+// Funzione per gestire il login su Corriere della Sera
 const loginCds = async (page, userInputs) => {
 
     console.log('Login su "Corriere della Sera" in corso...');
@@ -262,6 +262,41 @@ const loginCds = async (page, userInputs) => {
         consoleSuccess('Login su "Corriere della Sera" completato.');
     } catch {
         console.error('Login su "Corriere della Sera" non riuscito o timeout raggiunto.');
+    }
+    await sleep(3000); // Pausa tra le pagine
+};
+
+// Funzione per gestire il login su La Repubblica
+const loginRepubblica = async (page, userInputs) => {
+
+    console.log('Login su "La Repubblica" in corso...');
+
+    // Vai alla pagina di login
+    await page.goto('https://login.gedi.it/clp/login.php', {
+        waitUntil: 'networkidle2',
+    });
+
+    await sleep(2000);
+
+    // Clicca al centro dello username
+    await page.mouse.click(1200, 300);
+    await page.keyboard.type(userInputs.repubblicaEmail, { delay: 100 }); // Simula digitazione lenta
+
+    // Clicca al centro della password
+    await page.mouse.click(1200, 360);
+    await page.keyboard.type(userInputs.repubblicaPassword, { delay: 100 }); // Simula digitazione lenta
+
+    // Clicca al centro dell'elemento
+    await page.mouse.click(1200, 550);
+
+    await sleep(2000)
+
+    // Aspetta che il login sia completato
+    try {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 });
+        consoleSuccess('Login su "La Repubblica" completato.');
+    } catch {
+        console.error('Login su "La Repubblica" non riuscito o timeout raggiunto.');
     }
     await sleep(3000); // Pausa tra le pagine
 };
@@ -351,9 +386,12 @@ const cdsScaper = async (page, userInputs, query) => {
 
 };
 
-const repubblicaScraper = async (page) => {
+const repubblicaScraper = async (page, userInputs) => {
     const repubblicaScraperNews = [];
     const repubblicaScraperErrors = [];
+
+    // Eseguo il login su Repubblica
+    await loginRepubblica(page, userInputs);
     return { repubblicaScraperNews, repubblicaScraperErrors };
 }
 
@@ -378,18 +416,26 @@ const liberoScraper = async (page) => {
         const userInputs = await collectUserInputs();
 
         // Avvia il browser
-        const browser = await puppeteer.launch({ headless: true });
+        const browser = await puppeteer.launch({ headless: false });
+        
         const page = await browser.newPage();
+
+        // Imposta il viewport sulla pagina
+        await page.setViewport({
+            width: 1920,
+            height: 1080,
+            deviceScaleFactor: 1
+        });
 
         consoleInfo(`Ricerca per query "${userInputs.query}" in corso.. `);
         const queries = userInputs.query.split(',');
 
         for (query of queries) {
 
-            const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs, query);
-            allCdsScraperNews.push(cdsScraperNews);
-            allCdsScraperErrors[query] = cdsScraperErrors;
-            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(page);
+            // const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs, query);
+            // allCdsScraperNews.push(cdsScraperNews);
+            // allCdsScraperErrors[query] = cdsScraperErrors;
+            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(page, userInputs, query);
             allRepubblicaScraperNews.push(repubblicaScraperNews);
             allRepubblicaScraperErrors[query] = repubblicaScraperErrors;
             const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(page);
