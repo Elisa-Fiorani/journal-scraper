@@ -81,7 +81,7 @@ const getTitle = async (page) => {
         
                 // Ritorna il titolo estratto
                 const title = await page.$eval(selector, el => el.textContent.trim());
-                if (title) return title; // Restituisci il titolo se trovato
+                if (title) return sanitizeHtml(title); // Restituisci il titolo se trovato
 
             } catch {}
         }
@@ -120,7 +120,7 @@ const getDates = async (page) => {
 };
 
 const getText = async (page) => {
-    const selectors = ['div.content p', 'div.chapter p']; // Lista dei selettori per i paragrafi
+    const selectors = ['div.content *', 'div.chapter *']; // Lista dei selettori per i paragrafi
     for (const selector of selectors) {
         console.log('Ricerca testo con selettore ' + selector + ' in corso...')
         try {
@@ -128,10 +128,26 @@ const getText = async (page) => {
             await page.waitForSelector(selector, { timeout: 1000 });
 
             // Ritorna il testo concatenato
-            const text = await page.$$eval(selector, paragraphs =>
-                paragraphs.map(p => p.textContent.trim()).join(' ')
+            const textHtml = await page.$$eval(selector, elements =>
+                elements.map(el => el.outerHTML).join('\n') // Ottieni l'HTML grezzo e uniscilo con a capo
             );
-            if (text) return text; // Restituisci il testo se trovato
+
+            // Sanifica l'HTML
+            const sanitizedHtml = sanitizeHtml(textHtml, {
+                allowedTags: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span'], // Consenti solo i tag desiderati
+                allowedAttributes: {}, // Rimuovi tutti gli attributi
+            });
+
+            // Estrai solo il testo interno e uniscilo con \n
+            const text = sanitizedHtml
+            .replace(/<\/?(p|h1|h2|h3|h4|h5|h6|span)[^>]*>/g, '') // Rimuovi i tag HTML
+            .replace(/\s+/g, ' ') // Sostituisci spazi consecutivi con un singolo spazio
+            .trim() // Rimuovi spazi iniziali e finali
+            .split('\n') // Dividi per linee se necessario
+            .filter(line => line.trim() !== '') // Rimuovi linee vuote
+            .join('\n'); // Ricombina con a capo
+
+            if (text) return text;
         } catch {}
     }
 
@@ -261,9 +277,9 @@ const cdsScaper = async (page, userInputs) => {
     // Aspetta che il contenuto delle notizie sia visibile
     await page.waitForSelector('.pagination-list');
 
-    const lastPageNumber = await page.$eval('.pagination-list li:last-child a', el => {
+    const lastPageNumber = parseInt(await page.$eval('.pagination-list li:last-child a', el => {
         return parseInt(el.textContent.trim(), 10); // Converte direttamente il testo in un numero
-    });
+    }));
 
     if (lastPageNumber > 0) {
         consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Corriere della Sera" per la query "${userInputs.query}"`);
@@ -271,7 +287,7 @@ const cdsScaper = async (page, userInputs) => {
         console.warn(`Non sono stati trovati risulati su "Corriere della Sera" per la query "${userInputs.query}"`)
     }
 
-    for (let i = 1; i <= lastPageNumber; i++) {
+    for (let i = 1; i <= 1; i++) {
 
         // Definisco l'URL per la fonte di notizie
         const urlWithPage = `https://www.corriere.it/ricerca/?q=${userInputs.query}&page=${i}`;
@@ -305,8 +321,8 @@ const cdsScaper = async (page, userInputs) => {
                     journal: 'cds',
                     event,
                     date,
-                    title: sanitizeHtml(title),
-                    text: sanitizeHtml(text),
+                    title: title,
+                    text: text,
                     link
                 });
                 
@@ -339,6 +355,8 @@ const liberoScraper = async (page) => {
 
 (async () => {
     try {
+        console.log('--- ELISA FIORANI | JOURNAL SCRAPER ---');
+
         // Chiedi parametri in input all'utente
         const userInputs = await collectUserInputs();
 
@@ -360,7 +378,7 @@ const liberoScraper = async (page) => {
                 { id: 'id', title: '*ID_' },
                 { id: 'journal', title: '*TIPOQ_' },
                 { id: 'event', title: '*CASO_' },
-                { id: 'data', title: '*DATA_'},
+                { id: 'date', title: '*DATA_'},
                 { id: 'title', title: '*TITOLO_' },
                 { id: 'text', title: '*TXT_' },
                 { id: 'link', title: '*LINK_' },
