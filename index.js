@@ -7,17 +7,26 @@ const consoleSuccess = (message) => {
     console.log('\x1b[32m%s\x1b[0m', message);
 }
 
+const consoleInfo = (message) => {
+    console.log('\x1b[36m%s\x1b[0m', message); // Codice ANSI per il colore cyan
+};
+
 // Funzione per raccogliere input in un oggetto
 const collectUserInputs = async () => {
     console.log('>> Inserisci le credenziali di login per "Corriere della Sera".');
-    const email = await askQuestion('>> Email: ');
-    const password = await askHiddenInput('>> Password: ');
-    console.log('>> Inserisci la query di ricerca');
+    const cdsEmail = await askQuestion('>> Email: ');
+    const cdsPassword = await askHiddenInput('>> Password: ');
+    console.log('>> Inserisci le credenziali di login per "La Repubblica".');
+    const repubblicaEmail = await askQuestion('>> Email: ');
+    const repubblicaPassword = await askHiddenInput('>> Password: ');
+    console.log('>> Inserisci la query di ricerca (se più di una separate da ,)');
     const query = (await askQuestion('>> Query di Ricerca: ')).toLowerCase();
 
     return {
-        email,
-        password,
+        cdsEmail,
+        cdsPassword,
+        repubblicaEmail,
+        repubblicaPassword,
         query,
     };
 };
@@ -120,32 +129,31 @@ const getDates = async (page) => {
 };
 
 const getText = async (page) => {
-    const selectors = ['div.content *', 'div.chapter *']; // Lista dei selettori per i paragrafi
+    const selectors = ['div.content > *', 'div.chapter > *']; // Selettori per tutti i figli di div.content e div.chapter
+
     for (const selector of selectors) {
         console.log('Ricerca testo con selettore ' + selector + ' in corso...')
         try {
             // Aspetta che il selettore sia presente
             await page.waitForSelector(selector, { timeout: 1000 });
-
-            // Ritorna il testo concatenato
-            const textHtml = await page.$$eval(selector, elements =>
-                elements.map(el => el.outerHTML).join('\n') // Ottieni l'HTML grezzo e uniscilo con a capo
+        
+            // Ottieni e pulisci direttamente il testo
+            const text = await page.$$eval(selector, elements =>
+                elements
+                    .filter(el => {
+                        // Filtra solo i tag desiderati
+                        if (el.tagName === 'P') {
+                            return (
+                                el.classList.length === 0 || el.classList.contains('chapter-paragraph')
+                            );
+                        }
+                        return ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName);
+                    })
+                    .map(el => el.textContent.trim().replace(/\s+/g, ' ')) // Rimuovi spazi multipli per ogni elemento
+                    .filter(text => text !== '') // Elimina contenuti vuoti
+                    .join('\n') // Combina con un "a capo" tra gli elementi
             );
 
-            // Sanifica l'HTML
-            const sanitizedHtml = sanitizeHtml(textHtml, {
-                allowedTags: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span'], // Consenti solo i tag desiderati
-                allowedAttributes: {}, // Rimuovi tutti gli attributi
-            });
-
-            // Estrai solo il testo interno e uniscilo con \n
-            const text = sanitizedHtml
-            .replace(/<\/?(p|h1|h2|h3|h4|h5|h6|span)[^>]*>/g, '') // Rimuovi i tag HTML
-            .replace(/\s+/g, ' ') // Sostituisci spazi consecutivi con un singolo spazio
-            .trim() // Rimuovi spazi iniziali e finali
-            .split('\n') // Dividi per linee se necessario
-            .filter(line => line.trim() !== '') // Rimuovi linee vuote
-            .join('\n'); // Ricombina con a capo
 
             if (text) return text;
         } catch {}
@@ -216,6 +224,7 @@ const extractDates = (dateString) => {
 const determineEvent = (query) => {
     const eventKeywords = {
         cecchettin: ['cecchettin'],
+        castelli: ['castelli']
     };
     // Itera sulle chiavi di `eventKeywords`
     for (const [event, keywords] of Object.entries(eventKeywords)) {
@@ -241,8 +250,8 @@ const loginCds = async (page, userInputs) => {
     });
 
     // Compila i campi email e password
-    await page.type('input[name="email"]', userInputs.email);
-    await page.type('input[name="password"]', userInputs.password);
+    await page.type('input[name="email"]', userInputs.cdsEmail);
+    await page.type('input[name="password"]', userInputs.cdsPassword);
 
     // Clicca sul pulsante di login
     await page.click('button[type="submit"]');
@@ -260,16 +269,16 @@ const loginCds = async (page, userInputs) => {
 // Funzione per aggiungere un timeout
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const cdsScaper = async (page, userInputs) => {
+const cdsScaper = async (page, userInputs, query) => {
     const cdsScraperNews = [];
     const cdsScraperErrors = [];
     
     // Eseguo il login sulla fonte delle notizie
     await loginCds(page, userInputs);
 
-    console.log(`Ricerca su Corriere della Sera" per query "${userInputs.query}" in corso...`);
+    consoleInfo(`Ricerca su Corriere della Sera" per query "${query}" in corso...`);
     
-    const url = `https://www.corriere.it/ricerca/?q=${userInputs.query}`;
+    const url = `https://www.corriere.it/ricerca/?q=${query}`;
 
     // Vai alla pagina specificata
     await page.goto(url, { waitUntil: 'networkidle2' });
@@ -282,15 +291,15 @@ const cdsScaper = async (page, userInputs) => {
     }));
 
     if (lastPageNumber > 0) {
-        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Corriere della Sera" per la query "${userInputs.query}"`);
+        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Corriere della Sera" per la query "${query}"`);
     } else {
-        console.warn(`Non sono stati trovati risulati su "Corriere della Sera" per la query "${userInputs.query}"`)
+        console.warn(`Non sono stati trovati risulati su "Corriere della Sera" per la query "${query}"`)
     }
 
-    for (let i = 1; i <= 1; i++) {
+    for (let i = 1; i <= lastPageNumber; i++) {
 
         // Definisco l'URL per la fonte di notizie
-        const urlWithPage = `https://www.corriere.it/ricerca/?q=${userInputs.query}&page=${i}`;
+        const urlWithPage = `https://www.corriere.it/ricerca/?q=${query}&page=${i}`;
 
         // Vai alla pagina specificata
         await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
@@ -313,7 +322,7 @@ const cdsScaper = async (page, userInputs) => {
                 const { published, updated } = await getDates(page);
                 const date = updated || published;
                 const text = await getText(page);
-                const event = determineEvent(userInputs.query);
+                const event = determineEvent(query);
 
                 // Aggiungi i dati estratti all'array globale
                 cdsScraperNews.push({
@@ -336,9 +345,10 @@ const cdsScaper = async (page, userInputs) => {
             await sleep(3000);
         }
 
-        console.log(`Pagina ${i} processata con successo.`);
-        return { cdsScraperNews, cdsScraperErrors };
+        consoleInfo(`Pagina ${i} processata con successo.`);
     }
+    return { cdsScraperNews, cdsScraperErrors };
+
 };
 
 const repubblicaScraper = async (page) => {
@@ -357,16 +367,36 @@ const liberoScraper = async (page) => {
     try {
         console.log('--- ELISA FIORANI | JOURNAL SCRAPER ---');
 
+        const allCdsScraperNews = [];
+        const allCdsScraperErrors = {};
+        const allRepubblicaScraperNews = [];
+        const allRepubblicaScraperErrors = {}
+        const allLiberoScraperNews = [];
+        const allLiberoScraperErrors = {};
+
         // Chiedi parametri in input all'utente
         const userInputs = await collectUserInputs();
 
         // Avvia il browser
-        const browser = await puppeteer.launch({ headless: false });
+        const browser = await puppeteer.launch({ headless: true });
         const page = await browser.newPage();
 
-        const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs);
-        const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(page);
-        const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(page);
+        consoleInfo(`Ricerca per query "${userInputs.query}" in corso.. `);
+        const queries = userInputs.query.split(',');
+
+        for (query of queries) {
+
+            const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs, query);
+            allCdsScraperNews.push(cdsScraperNews);
+            allCdsScraperErrors[query] = cdsScraperErrors;
+            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(page);
+            allRepubblicaScraperNews.push(repubblicaScraperNews);
+            allRepubblicaScraperErrors[query] = repubblicaScraperErrors;
+            const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(page);
+            allLiberoScraperNews.push(liberoScraperNews);
+            allLiberoScraperErrors[query] = liberoScraperErrors;
+        }
+
 
         // Chiudi il browser
         await browser.close();
@@ -386,9 +416,9 @@ const liberoScraper = async (page) => {
         });
 
         const allNews = [
-            ...cdsScraperNews,
-            ...repubblicaScraperNews,
-            ...liberoScraperNews
+            ...allCdsScraperNews,
+            ...allRepubblicaScraperNews,
+            ...allLiberoScraperNews
         ];
 
         // Salva tutti i dati raccolti in un unico CSV
@@ -396,19 +426,19 @@ const liberoScraper = async (page) => {
     
         consoleSuccess('Dati salvati su file "notizie.csv".');
 
-        if (cdsScraperErrors.length > 0) {
-            console.warn('Articoli andati in errore su "Corriere della Sera" : ', cdsScraperErrors.length);
-            console.warn(cdsScraperErrors);
+        if (allCdsScraperErrors.length > 0) {
+            console.warn('Articoli andati in errore su "Corriere della Sera" : ', allCdsScraperErrors.length);
+            console.warn(JSON.stringify(allRepubblicaScraperErrors));
         }
 
-        if (repubblicaScraperErrors.length > 0) {
-            console.warn('Articoli andati in errore su "La Repubblica" : ', repubblicaScraperErrors.length);
-            console.warn(repubblicaScraperErrors);
+        if (allRepubblicaScraperErrors.length > 0) {
+            console.warn('Articoli andati in errore su "La Repubblica" : ', allRepubblicaScraperErrors.length);
+            console.warn(JSON.stringify(allRepubblicaScraperErrors));
         }
 
-        if (liberoScraperErrors.length > 0) {
-            console.warn('Articoli andati in errore su "Libero" : ', liberoScraperErrors.length);
-            console.warn(liberoScraperErrors);
+        if (allLiberoScraperErrors.length > 0) {
+            console.warn('Articoli andati in errore su "Libero" : ', allLiberoScraperErrors.length);
+            console.warn(JSON.stringify(allLiberoScraperErrors));
         }
 
     } catch (error) {
