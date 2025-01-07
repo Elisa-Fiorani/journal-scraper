@@ -81,7 +81,8 @@ const askHiddenInput = (query) => {
 const getTitle = async (page, journal) => {
     const cdsSelectors = ['h1.title-art-hp', 'h1.title-art', 'h1.article-title', 'h1.title']; // Lista dei possibili selettori
     const repubblicaSelectors = ['article h1'];
-    const selectors = journal === 'cds' ? cdsSelectors : repubblicaSelectors;
+    const liberoSelectors = ['.article h1'];
+    const selectors = journal === 'cds' ? cdsSelectors : (journal === 'repubblica' ? repubblicaSelectors : liberoSelectors);
 
     for (const selector of selectors) {
         console.log('Ricerca titolo con selettore ' + selector + ' in corso...')
@@ -102,8 +103,11 @@ const getTitle = async (page, journal) => {
     throw new Error('Nessun titolo trovato.');
 };
 
-const getDates = async (page) => {
-    const selectors = ['p.is-last-update', 'p.media-news-date', '.article-date-place', "p.is-copyright"]; // Lista dei selettori per il datetime
+const getDates = async (page, journal) => {
+    const cdsSelectors = ['p.is-last-update', 'p.media-news-date', '.article-date-place', "p.is-copyright"]; // Lista dei selettori per il datetime
+    const liberoSelectors = ['.article-data time'];
+    const selectors = journal === 'cds' ? cdsSelectors : liberoSelectors;
+
     for (const selector of selectors) {
         console.log('Ricerca data con selettore ' + selector + ' in corso...')
 
@@ -134,7 +138,8 @@ const getDates = async (page) => {
 const getText = async (page, journal) => {
     const cdsSelectors = ['div.content > *', 'div.chapter > *']; // Selettori per tutti i figli di div.content e div.chapter
     const repubblicaSelectors = ['article .story__text > *', 'article .detail_summary', 'article > *']; // Selettori per Repubblica
-    const selectors = journal === 'cds' ? cdsSelectors : repubblicaSelectors;
+    const liberoSelectors = ['.video-description > p', '.article section > *'];
+    const selectors = journal === 'cds' ? cdsSelectors : (journal === 'repubblica' ? repubblicaSelectors : liberoSelectors);
 
     for (const selector of selectors) {
         console.log('Ricerca testo con selettore ' + selector + ' in corso...')
@@ -144,7 +149,7 @@ const getText = async (page, journal) => {
 
             let text;
 
-            if (journal === 'cds') {
+            if (journal === 'cds' || journal === 'libero') {
                 text = await page.$$eval(selector, elements =>
                     elements
                         .filter(el => {
@@ -156,7 +161,12 @@ const getText = async (page, journal) => {
                             }
                             return ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName);
                         })
-                        .map(el => el.textContent.trim().replace(/\s+/g, ' ')) // Rimuovi spazi multipli per ogni elemento
+                        .map(el => 
+                            el.textContent
+                              .trim()
+                              .replace(/\s+/g, ' ') // Rimuovi spazi multipli
+                              .replace(/Dai blog/gi, '') // Rimuovi "Dai blog" in modo case insensitive
+                        )
                         .filter(text => text !== '') // Elimina contenuti vuoti
                         .join('\n') // Combina con un "a capo" tra gli elementi
                 );
@@ -307,35 +317,6 @@ const loginRepubblica = async (page, userInputs) => {
 
     let sessionLoginRepubblica = false;
 
-    const blockedURLs = [
-        'services.insurads.com',
-        'securepubads.g.doubleclick.net',
-        'dt.adsafeprotected.com',
-        'metrics.brightcove.com',
-        'oasjs.kataweb.it',
-        'pagead2.googlesyndication.com',
-        'www.googleadservices.com',
-        'secure-it.imrworldwide.com',
-        'jadsver.postrelease.com',
-        'simage2.pubmatic.com',
-        'criteo-sync.teads.tv',
-        'sync-criteo.ads.yieldmo.com',
-        'cdn.insurads.com',
-        'c.amazon-adsystem.com',
-        'fundingchoicesmessages.google.com'
-    ];
-    
-    await page.setRequestInterception(true);
-    
-    page.on('request', (request) => {
-        const url = request.url();
-        if (blockedURLs.some(blocked => url.includes(blocked))) {
-            request.abort(); // Blocca la richiesta
-        } else {
-            request.continue(); // Continua con le altre richieste
-        }
-    });
-
     await page.goto('https://repubblica.it', {
         waitUntil: 'networkidle2',
     });
@@ -420,7 +401,7 @@ const cdsScaper = async (page, userInputs, query) => {
         console.warn(`Non sono stati trovati risulati su "Corriere della Sera" per la query "${query}"`)
     }
 
-    for (let i = 1; i <= 1; i++) {
+    for (let i = 1; i <= lastPageNumber; i++) {
 
         // Definisco l'URL per la fonte di notizie
         const urlWithPage = `https://www.corriere.it/ricerca/?q=${query}&page=${i}`;
@@ -443,7 +424,7 @@ const cdsScaper = async (page, userInputs, query) => {
 
                 // Estrarre i dettagli dell'articolo
                 const title = await getTitle(page, 'cds');
-                const { published, updated } = await getDates(page);
+                const { published, updated } = await getDates(page,'cds');
                 const date = updated || published;
                 const text = await getText(page, 'cds');
                 const event = determineEvent(query);
@@ -462,7 +443,7 @@ const cdsScaper = async (page, userInputs, query) => {
                 consoleSuccess(`Articolo aggiunto da "Corriere della Sera": ${title}`);
 
             } catch (error) {
-                const errorMessage = `Errore nell'estrazione dell'articolo: ${link} - ${error.message}`;
+                const errorMessage = `Errore nell'estrazione dell'articolo da "Corriere della Sera": ${link} - ${error.message}`;
                 cdsScraperErrors.push(errorMessage)
                 console.warn(errorMessage);
             }
@@ -475,7 +456,7 @@ const cdsScaper = async (page, userInputs, query) => {
 
 };
 
-const repubblicaScraper = async (page, userInputs) => {
+const repubblicaScraper = async (page, userInputs, query) => {
     const repubblicaScraperNews = [];
     const repubblicaScraperErrors = [];
 
@@ -506,7 +487,7 @@ const repubblicaScraper = async (page, userInputs) => {
         console.warn(`Non sono stati trovati risulati su "La Repubblica" per la query "${query}"`)
     }
 
-    for (let i = 1; i <= 1; i++) {
+    for (let i = 1; i <= lastPageNumber; i++) {
 
         // Definisco l'URL per la fonte di notizie
         const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
@@ -571,10 +552,10 @@ const repubblicaScraper = async (page, userInputs) => {
                     link: article.link
                 });
                 
-                consoleSuccess(`Articolo aggiunto da "La Repubblica" : ${title}`);
+                consoleSuccess(`Articolo aggiunto da "La Repubblica": ${title}`);
 
             } catch (error) {
-                const errorMessage = `Errore nell'estrazione dell'articolo: ${article.link} - ${error.message}`;
+                const errorMessage = `Errore nell'estrazione dell'articolo da "La Repubblica": ${article.link} - ${error.message}`;
                 repubblicaScraperErrors.push(errorMessage);
                 console.warn(errorMessage);
             }
@@ -587,9 +568,73 @@ const repubblicaScraper = async (page, userInputs) => {
     return { repubblicaScraperNews, repubblicaScraperErrors };
 }
 
-const liberoScraper = async (page) => {
+const liberoScraper = async (page, query) => {
     const liberoScraperNews = [];
     const liberoScraperErrors = [];
+
+    consoleInfo(`Ricerca su "Libero" per query "${query}" in corso...`);
+
+    const lastPageNumber = 46;
+
+    const event = determineEvent(query);
+
+    if (lastPageNumber > 0) {
+        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Libero" per la query "${event}"`);
+    } else {
+        console.warn(`Non sono stati trovati risulati su "Libero" per la query "${event}"`)
+    }
+
+    for (let i = 1; i <= lastPageNumber; i++) {
+
+        const urlWithPage = `https://www.liberoquotidiano.it/search/page/${i}/?keyword=${event}&sortField=pubdate`;
+        // Vai alla pagina specificata
+        await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+
+        // Aspetta che il contenuto delle notizie sia visibile
+        await page.waitForSelector('.news-list-container');
+
+        // Estrai i titoli e i link delle notizie
+        const links = await page.$$eval('.news-list-container article header h2 a', anchors =>
+            anchors.map(anchor => anchor.href)
+        );
+
+        for (const link of links) {
+            try {
+                // Vai alla pagina dell'articolo
+                await page.goto(link, { waitUntil: 'networkidle2' });
+
+                // Estrarre i dettagli dell'articolo
+                const title = await getTitle(page, 'libero');
+                const { published, updated } = await getDates(page, 'libero');
+                const date = updated || published;
+                const text = await getText(page, 'libero');
+                const event = determineEvent(query);
+
+                // Aggiungi i dati estratti all'array globale
+                liberoScraperNews.push({
+                    id: liberoScraperNews.length + 1,
+                    journal: 'libero',
+                    event,
+                    date,
+                    title: title,
+                    text: text,
+                    link
+                });
+                
+                consoleSuccess(`Articolo aggiunto da "Libero": ${title}`);
+
+            } catch (error) {
+                const errorMessage = `Errore nell'estrazione dell'articolo da "Libero": ${link} - ${error.message}`;
+                liberoScraperErrors.push(errorMessage)
+                console.warn(errorMessage);
+            }
+            await sleep(3000);
+        }
+
+        consoleInfo(`Pagina ${i} su "Libero" processata con successo.`);
+
+    }
+
     return { liberoScraperNews, liberoScraperErrors };
 }
 
@@ -608,7 +653,7 @@ const liberoScraper = async (page) => {
         const userInputs = await collectUserInputs();
 
         // Avvia il browser
-        const browser = await puppeteer.launch({ headless: false });
+        const browser = await puppeteer.launch({ headless: true });
         
         const page = await browser.newPage();
 
@@ -617,6 +662,38 @@ const liberoScraper = async (page) => {
             width: 1920,
             height: 1080,
             deviceScaleFactor: 1
+        });
+
+        const blockedURLs = [
+            'services.insurads.com',
+            'securepubads.g.doubleclick.net',
+            'dt.adsafeprotected.com',
+            'metrics.brightcove.com',
+            'oasjs.kataweb.it',
+            'pagead2.googlesyndication.com',
+            'www.googleadservices.com',
+            'secure-it.imrworldwide.com',
+            'jadsver.postrelease.com',
+            'simage2.pubmatic.com',
+            'criteo-sync.teads.tv',
+            'sync-criteo.ads.yieldmo.com',
+            'cdn.insurads.com',
+            'c.amazon-adsystem.com',
+            'fundingchoicesmessages.google.com',
+            'pubads.g.doubleclick.net',
+            'advertiser.wbrtk.net/js/prebid-ads.js',
+            'des.smartclip.net'
+        ];        
+        
+        await page.setRequestInterception(true);
+        
+        page.on('request', (request) => {
+            const url = request.url();
+            if (blockedURLs.some(blocked => url.includes(blocked))) {
+                request.abort(); // Blocca la richiesta
+            } else {
+                request.continue(); // Continua con le altre richieste
+            }
         });
 
         consoleInfo(`Ricerca per query "${userInputs.query}" in corso.. `);
@@ -629,7 +706,7 @@ const liberoScraper = async (page) => {
             const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(page, userInputs, query);
             allRepubblicaScraperNews.push(repubblicaScraperNews);
             allRepubblicaScraperErrors[query] = repubblicaScraperErrors;
-            const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(page);
+            const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(page, query);
             allLiberoScraperNews.push(liberoScraperNews);
             allLiberoScraperErrors[query] = liberoScraperErrors;
         }
