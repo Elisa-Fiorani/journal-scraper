@@ -78,22 +78,25 @@ const askHiddenInput = (query) => {
 };
 
 
-const getTitle = async (page) => {
-    const selectors = ['h1.title-art-hp', 'h1.title-art', 'h1.article-title', 'h1.title']; // Lista dei possibili selettori
-        for (const selector of selectors) {
-            console.log('Ricerca titolo con selettore ' + selector + ' in corso...')
+const getTitle = async (page, journal) => {
+    const cdsSelectors = ['h1.title-art-hp', 'h1.title-art', 'h1.article-title', 'h1.title']; // Lista dei possibili selettori
+    const repubblicaSelectors = ['article h1'];
+    const selectors = journal === 'cds' ? cdsSelectors : repubblicaSelectors;
 
-            try {
+    for (const selector of selectors) {
+        console.log('Ricerca titolo con selettore ' + selector + ' in corso...')
 
-                // Aspetta che il selettore sia presente
-                await page.waitForSelector(selector, { timeout: 2000 });
-        
-                // Ritorna il titolo estratto
-                const title = await page.$eval(selector, el => el.textContent.trim());
-                if (title) return sanitizeHtml(title); // Restituisci il titolo se trovato
+        try {
 
-            } catch {}
-        }
+            // Aspetta che il selettore sia presente
+            await page.waitForSelector(selector, { timeout: 2000 });
+    
+            // Ritorna il titolo estratto
+            const title = await page.$eval(selector, el => el.textContent.trim());
+            if (title) return sanitizeHtml(title); // Restituisci il titolo se trovato
+
+        } catch {}
+    }
 
     // Se nessun titolo è stato trovato, lancia un errore
     throw new Error('Nessun titolo trovato.');
@@ -128,33 +131,60 @@ const getDates = async (page) => {
     throw new Error('Nessuna data trovata.');
 };
 
-const getText = async (page) => {
-    const selectors = ['div.content > *', 'div.chapter > *']; // Selettori per tutti i figli di div.content e div.chapter
+const getText = async (page, journal) => {
+    const cdsSelectors = ['div.content > *', 'div.chapter > *']; // Selettori per tutti i figli di div.content e div.chapter
+    const repubblicaSelectors = ['article .story__text > *', 'article .detail_summary', 'article > *']; // Selettori per Repubblica
+    const selectors = journal === 'cds' ? cdsSelectors : repubblicaSelectors;
 
     for (const selector of selectors) {
         console.log('Ricerca testo con selettore ' + selector + ' in corso...')
         try {
             // Aspetta che il selettore sia presente
             await page.waitForSelector(selector, { timeout: 1000 });
+
+            let text;
+
+            if (journal === 'cds') {
+                text = await page.$$eval(selector, elements =>
+                    elements
+                        .filter(el => {
+                            // Filtra solo i tag desiderati
+                            if (el.tagName === 'P') {
+                                return (
+                                    el.classList.length === 0 || el.classList.contains('chapter-paragraph')
+                                );
+                            }
+                            return ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName);
+                        })
+                        .map(el => el.textContent.trim().replace(/\s+/g, ' ')) // Rimuovi spazi multipli per ogni elemento
+                        .filter(text => text !== '') // Elimina contenuti vuoti
+                        .join('\n') // Combina con un "a capo" tra gli elementi
+                );
+            } else if (journal === 'repubblica') {
+                // Gestione per Repubblica
+                if (selector === 'article .story__text > *') {
+                    text = await page.$$eval(selector, elements =>
+                        elements
+                            .filter(el => ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName))
+                            .map(el => el.textContent.trim().replace(/\s+/g, ' '))
+                            .filter(text => text !== '')
+                            .join('\n')
+                    );
+                } else if (selector === 'article .detail_summary') {
+                    // Estrai il testo direttamente senza filtrare
+                    text = await page.$eval(selector, el => el.textContent.trim());
+                } else if (selector === 'article > *') {
+                    // Filtra i tag rilevanti
+                    text = await page.$$eval(selector, elements =>
+                        elements
+                            .filter(el => ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName))
+                            .map(el => el.textContent.trim().replace(/\s+/g, ' '))
+                            .filter(text => text !== '')
+                            .join('\n')
+                    );
+                }
+            }
         
-            // Ottieni e pulisci direttamente il testo
-            const text = await page.$$eval(selector, elements =>
-                elements
-                    .filter(el => {
-                        // Filtra solo i tag desiderati
-                        if (el.tagName === 'P') {
-                            return (
-                                el.classList.length === 0 || el.classList.contains('chapter-paragraph')
-                            );
-                        }
-                        return ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName);
-                    })
-                    .map(el => el.textContent.trim().replace(/\s+/g, ' ')) // Rimuovi spazi multipli per ogni elemento
-                    .filter(text => text !== '') // Elimina contenuti vuoti
-                    .join('\n') // Combina con un "a capo" tra gli elementi
-            );
-
-
             if (text) return text;
         } catch {}
     }
@@ -244,6 +274,8 @@ const loginCds = async (page, userInputs) => {
 
     console.log('Login su "Corriere della Sera" in corso...');
 
+    const sessionLoginCds = false;
+
     // Vai alla pagina di login
     await page.goto('https://www.corriere.it/account/login?landing=https://www.corriere.it/', {
         waitUntil: 'networkidle2',
@@ -260,10 +292,12 @@ const loginCds = async (page, userInputs) => {
     try {
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 });
         consoleSuccess('Login su "Corriere della Sera" completato.');
+        sessionLoginCds = true;
     } catch {
         console.error('Login su "Corriere della Sera" non riuscito o timeout raggiunto.');
     }
     await sleep(3000); // Pausa tra le pagine
+    return sessionLoginCds;
 };
 
 // Funzione per gestire il login su La Repubblica
@@ -271,12 +305,65 @@ const loginRepubblica = async (page, userInputs) => {
 
     console.log('Login su "La Repubblica" in corso...');
 
-    // Vai alla pagina di login
-    await page.goto('https://login.gedi.it/clp/login.php', {
+    let sessionLoginRepubblica = false;
+
+    const blockedURLs = [
+        'services.insurads.com',
+        'securepubads.g.doubleclick.net',
+        'dt.adsafeprotected.com',
+        'metrics.brightcove.com',
+        'oasjs.kataweb.it',
+        'pagead2.googlesyndication.com',
+        'www.googleadservices.com',
+        'secure-it.imrworldwide.com',
+        'jadsver.postrelease.com',
+        'simage2.pubmatic.com',
+        'criteo-sync.teads.tv',
+        'sync-criteo.ads.yieldmo.com',
+        'cdn.insurads.com',
+        'c.amazon-adsystem.com',
+        'fundingchoicesmessages.google.com'
+    ];
+    
+    await page.setRequestInterception(true);
+    
+    page.on('request', (request) => {
+        const url = request.url();
+        if (blockedURLs.some(blocked => url.includes(blocked))) {
+            request.abort(); // Blocca la richiesta
+        } else {
+            request.continue(); // Continua con le altre richieste
+        }
+    });
+
+    await page.goto('https://repubblica.it', {
         waitUntil: 'networkidle2',
     });
 
-    await sleep(2000);
+    // Nascondi il banner e ottieni le coordinate per il clic
+    const loginCoordinates = await page.evaluate(() => {
+        // Nascondi il banner di iubenda
+        const iubendaBanner = document.querySelector('#iubenda-cs-banner');
+        if (iubendaBanner) {
+            iubendaBanner.style.display = 'none'; // Nascondi il banner
+        }
+
+        // Trova l'elemento login
+        const loginElement = document.querySelector('#account-data-container');
+
+        // Ottieni le coordinate del centro dell'elemento
+        const loginRect = loginElement.getBoundingClientRect();
+        return {
+            x: loginRect.left + loginRect.width / 2, // Centro X
+            y: loginRect.top + loginRect.height / 2  // Centro Y
+        };
+    });
+
+    if (!loginCoordinates) return sessionLoginRepubblica;
+
+    await page.mouse.click(loginCoordinates.x, loginCoordinates.y);
+
+    await sleep(10000);
 
     // Clicca al centro dello username
     await page.mouse.click(1200, 300);
@@ -286,19 +373,19 @@ const loginRepubblica = async (page, userInputs) => {
     await page.mouse.click(1200, 360);
     await page.keyboard.type(userInputs.repubblicaPassword, { delay: 100 }); // Simula digitazione lenta
 
-    // Clicca al centro dell'elemento
+    // Clicca al centro del bottone
     await page.mouse.click(1200, 550);
-
-    await sleep(2000)
 
     // Aspetta che il login sia completato
     try {
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 });
         consoleSuccess('Login su "La Repubblica" completato.');
+        sessionLoginRepubblica = true;
     } catch {
         console.error('Login su "La Repubblica" non riuscito o timeout raggiunto.');
     }
-    await sleep(3000); // Pausa tra le pagine
+    await sleep(10000); // Pausa tra le pagine
+    return sessionLoginRepubblica;
 };
 
 // Funzione per aggiungere un timeout
@@ -309,9 +396,11 @@ const cdsScaper = async (page, userInputs, query) => {
     const cdsScraperErrors = [];
     
     // Eseguo il login sulla fonte delle notizie
-    await loginCds(page, userInputs);
+    const sessionLoginCds = await loginCds(page, userInputs);
 
-    consoleInfo(`Ricerca su Corriere della Sera" per query "${query}" in corso...`);
+    if (!sessionLoginCds) return { cdsScraperNews, cdsScraperErrors };
+
+    consoleInfo(`Ricerca su "Corriere della Sera" per query "${query}" in corso...`);
     
     const url = `https://www.corriere.it/ricerca/?q=${query}`;
 
@@ -321,9 +410,9 @@ const cdsScaper = async (page, userInputs, query) => {
     // Aspetta che il contenuto delle notizie sia visibile
     await page.waitForSelector('.pagination-list');
 
-    const lastPageNumber = parseInt(await page.$eval('.pagination-list li:last-child a', el => {
+    const lastPageNumber = await page.$eval('.pagination-list li:last-child a', el => {
         return parseInt(el.textContent.trim(), 10); // Converte direttamente il testo in un numero
-    }));
+    });
 
     if (lastPageNumber > 0) {
         consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Corriere della Sera" per la query "${query}"`);
@@ -353,10 +442,10 @@ const cdsScaper = async (page, userInputs, query) => {
                 await page.goto(link, { waitUntil: 'networkidle2' });
 
                 // Estrarre i dettagli dell'articolo
-                const title = await getTitle(page);
+                const title = await getTitle(page, 'cds');
                 const { published, updated } = await getDates(page);
                 const date = updated || published;
-                const text = await getText(page);
+                const text = await getText(page, 'cds');
                 const event = determineEvent(query);
 
                 // Aggiungi i dati estratti all'array globale
@@ -370,7 +459,7 @@ const cdsScaper = async (page, userInputs, query) => {
                     link
                 });
                 
-                consoleSuccess(`Articolo aggiunto: ${title}`);
+                consoleSuccess(`Articolo aggiunto da "Corriere della Sera": ${title}`);
 
             } catch (error) {
                 const errorMessage = `Errore nell'estrazione dell'articolo: ${link} - ${error.message}`;
@@ -380,7 +469,7 @@ const cdsScaper = async (page, userInputs, query) => {
             await sleep(3000);
         }
 
-        consoleInfo(`Pagina ${i} processata con successo.`);
+        consoleInfo(`Pagina ${i} su "Corriere della Sera" processata con successo.`);
     }
     return { cdsScraperNews, cdsScraperErrors };
 
@@ -391,7 +480,110 @@ const repubblicaScraper = async (page, userInputs) => {
     const repubblicaScraperErrors = [];
 
     // Eseguo il login su Repubblica
-    await loginRepubblica(page, userInputs);
+    const sessionLoginRepubblica = await loginRepubblica(page, userInputs);
+
+    if (!sessionLoginRepubblica) return { repubblicaScraperNews, repubblicaScraperErrors };
+
+    consoleInfo(`Ricerca su "La Repubblica" per query "${query}" in corso...`);
+
+    const url = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
+
+    // Vai alla pagina specificata
+    await page.goto(url, { waitUntil: 'networkidle2' });
+
+    // Aspetta che il contenuto delle paginazione sia visibile
+    await page.waitForSelector('.pagination');
+
+    const lastPageNumber = await page.$eval('.pagination p', el => {
+        // Estrai solo il numero dopo "di"
+        const match = el.textContent.match(/di\s+(\d+)/); // Trova il numero dopo "di"
+        return match ? parseInt(match[1], 10) : 0; // Converte il numero trovato in un intero
+    });
+
+    if (lastPageNumber > 0) {
+        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "La Repubblica" per la query "${query}"`);
+    } else {
+        console.warn(`Non sono stati trovati risulati su "La Repubblica" per la query "${query}"`)
+    }
+
+    for (let i = 1; i <= 5; i++) {
+
+        // Definisco l'URL per la fonte di notizie
+        const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
+        
+        // Vai alla pagina specificata
+        await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+
+        // Aspetta che il contenuto delle notizie sia visibile
+        await page.waitForSelector('#lista-risultati');
+
+        // Estrai link, titoli e date
+        const articles = await page.$$eval('#lista-risultati article h1 a', (anchors) => {
+            return anchors.map(anchor => {
+                const article = {
+                    link: anchor.href, // Link all'articolo
+                };
+
+                // Trova il contenitore dell'articolo per cercare le date
+                const container = anchor.closest('article'); // Assumi che gli articoli siano racchiusi in <article>
+                if (container) {
+                    // Cerca le date in "aside.correlati"
+                    const correlati = container.querySelector('aside.correlati a time');
+                    const correlatiExtra = container.querySelector('aside.correlati-extra a time');
+                    let date;
+
+                    if (correlati) {
+                        date = correlati.textContent.trim();
+                    }
+
+                    if (correlatiExtra) {
+                        date = correlatiExtra.textContent.trim();
+                    }
+
+                    // Aggiungi tutte le date trovate
+                    article.date = date;
+                }
+
+                return article;
+            });
+        });
+
+        for (const article of articles) {
+            try {
+                // Vai alla pagina dell'articolo
+                await page.goto(article.link, { waitUntil: 'networkidle2' });
+
+                // Estrarre i dettagli dell'articolo
+                const title = await getTitle(page, 'repubblica');
+                const { published, updated } = extractDates(article.date);
+                const date = updated || published;
+                const text = await getText(page, 'repubblica');
+                const event = determineEvent(query);
+
+                // Aggiungi i dati estratti all'array globale
+                repubblicaScraperNews.push({
+                    id: repubblicaScraperNews.length + 1,
+                    journal: 'repubblica',
+                    event,
+                    date,
+                    title: title,
+                    text: text,
+                    link: article.link
+                });
+                
+                consoleSuccess(`Articolo aggiunto da "La Repubblica" : ${title}`);
+
+            } catch (error) {
+                const errorMessage = `Errore nell'estrazione dell'articolo: ${article.link} - ${error.message}`;
+                repubblicaScraperErrors.push(errorMessage)
+                console.warn(errorMessage);
+            }
+            await sleep(3000);
+        }
+
+        consoleInfo(`Pagina ${i} su "La Repubblica" processata con successo.`);
+    }
+
     return { repubblicaScraperNews, repubblicaScraperErrors };
 }
 
@@ -403,7 +595,7 @@ const liberoScraper = async (page) => {
 
 (async () => {
     try {
-        console.log('--- ELISA FIORANI | JOURNAL SCRAPER ---');
+        console.log('--- JOURNAL SCRAPER ---');
 
         const allCdsScraperNews = [];
         const allCdsScraperErrors = {};
@@ -465,7 +657,9 @@ const liberoScraper = async (page) => {
             ...allCdsScraperNews,
             ...allRepubblicaScraperNews,
             ...allLiberoScraperNews
-        ];
+        ].flat();
+
+        console.log(allNews);
 
         // Salva tutti i dati raccolti in un unico CSV
         await csvWriter.writeRecords(allNews);
