@@ -13,9 +13,9 @@ const consoleInfo = (message) => {
 
 // Funzione per raccogliere input in un oggetto
 const collectUserInputs = async () => {
-    // console.log('>> Inserisci le credenziali di login per "Corriere della Sera".');
-    // const cdsEmail = await askQuestion('>> Email: ');
-    // const cdsPassword = await askHiddenInput('>> Password: ');
+    console.log('>> Inserisci le credenziali di login per "Corriere della Sera".');
+    const cdsEmail = await askQuestion('>> Email: ');
+    const cdsPassword = await askHiddenInput('>> Password: ');
     console.log('>> Inserisci le credenziali di login per "La Repubblica".');
     const repubblicaEmail = await askQuestion('>> Email: ');
     const repubblicaPassword = await askHiddenInput('>> Password: ');
@@ -23,8 +23,8 @@ const collectUserInputs = async () => {
     const query = (await askQuestion('>> Query di Ricerca: ')).toLowerCase();
 
     return {
-        // cdsEmail,
-        // cdsPassword,
+        cdsEmail,
+        cdsPassword,
         repubblicaEmail,
         repubblicaPassword,
         query,
@@ -274,7 +274,7 @@ const loginCds = async (page, userInputs) => {
 
     console.log('Login su "Corriere della Sera" in corso...');
 
-    const sessionLoginCds = false;
+    let sessionLoginCds = false;
 
     // Vai alla pagina di login
     await page.goto('https://www.corriere.it/account/login?landing=https://www.corriere.it/', {
@@ -420,7 +420,7 @@ const cdsScaper = async (page, userInputs, query) => {
         console.warn(`Non sono stati trovati risulati su "Corriere della Sera" per la query "${query}"`)
     }
 
-    for (let i = 1; i <= lastPageNumber; i++) {
+    for (let i = 1; i <= 1; i++) {
 
         // Definisco l'URL per la fonte di notizie
         const urlWithPage = `https://www.corriere.it/ricerca/?q=${query}&page=${i}`;
@@ -506,7 +506,7 @@ const repubblicaScraper = async (page, userInputs) => {
         console.warn(`Non sono stati trovati risulati su "La Repubblica" per la query "${query}"`)
     }
 
-    for (let i = 1; i <= 5; i++) {
+    for (let i = 1; i <= 1; i++) {
 
         // Definisco l'URL per la fonte di notizie
         const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
@@ -575,7 +575,7 @@ const repubblicaScraper = async (page, userInputs) => {
 
             } catch (error) {
                 const errorMessage = `Errore nell'estrazione dell'articolo: ${article.link} - ${error.message}`;
-                repubblicaScraperErrors.push(errorMessage)
+                repubblicaScraperErrors.push(errorMessage);
                 console.warn(errorMessage);
             }
             await sleep(3000);
@@ -623,10 +623,9 @@ const liberoScraper = async (page) => {
         const queries = userInputs.query.split(',');
 
         for (query of queries) {
-
-            // const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs, query);
-            // allCdsScraperNews.push(cdsScraperNews);
-            // allCdsScraperErrors[query] = cdsScraperErrors;
+            const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs, query);
+            allCdsScraperNews.push(cdsScraperNews);
+            allCdsScraperErrors[query] = cdsScraperErrors;
             const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(page, userInputs, query);
             allRepubblicaScraperNews.push(repubblicaScraperNews);
             allRepubblicaScraperErrors[query] = repubblicaScraperErrors;
@@ -653,33 +652,47 @@ const liberoScraper = async (page) => {
             ],
         });
 
+        // Combina tutte le news in un array piatto
         const allNews = [
             ...allCdsScraperNews,
             ...allRepubblicaScraperNews,
             ...allLiberoScraperNews
         ].flat();
 
-        console.log(allNews);
+        // Assegna un ID numerico decrescente
+        const totalNews = allNews.length; // Conta il totale delle news
+        const allNewsWithIds = allNews.map((news, index) => ({
+            ...news,
+            id: totalNews - index // Genera ID decrescente
+        }));
 
         // Salva tutti i dati raccolti in un unico CSV
-        await csvWriter.writeRecords(allNews);
+        await csvWriter.writeRecords(allNewsWithIds);
     
         consoleSuccess('Dati salvati su file "notizie.csv".');
 
-        if (allCdsScraperErrors.length > 0) {
-            console.warn('Articoli andati in errore su "Corriere della Sera" : ', allCdsScraperErrors.length);
-            console.warn(JSON.stringify(allRepubblicaScraperErrors));
-        }
+        const scraperErrors = {
+            'Corriere della Sera': allCdsScraperErrors,
+            'La Repubblica': allRepubblicaScraperErrors,
+            'Libero': allLiberoScraperErrors
+        };
 
-        if (allRepubblicaScraperErrors.length > 0) {
-            console.warn('Articoli andati in errore su "La Repubblica" : ', allRepubblicaScraperErrors.length);
-            console.warn(JSON.stringify(allRepubblicaScraperErrors));
-        }
-
-        if (allLiberoScraperErrors.length > 0) {
-            console.warn('Articoli andati in errore su "Libero" : ', allLiberoScraperErrors.length);
-            console.warn(JSON.stringify(allLiberoScraperErrors));
-        }
+        Object.entries(scraperErrors).forEach(([source, errors]) => {
+            // Verifica se l'oggetto `errors` ha chiavi (cioè contiene errori)
+            const hasErrors = Object.values(errors).some(errorArray => errorArray.length > 0);
+        
+            if (hasErrors) {
+                console.warn(`Articoli andati in errore su "${source}":`);
+                
+                // Itera su ogni categoria di errore all'interno di `errors`
+                Object.entries(errors).forEach(([query, errorArray]) => {
+                    if (errorArray.length > 0) {
+                        console.warn(`Errore per la query "${query}" (${errorArray.length} articoli):`);
+                        console.warn(JSON.stringify(errorArray, null, 2));
+                    }
+                });
+            }
+        });
 
     } catch (error) {
         console.error('Errore durante l’estrazione delle notizie:', error.message);
