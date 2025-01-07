@@ -697,7 +697,7 @@ const liberoScraper = async (page, query) => {
         });
 
         consoleInfo(`Ricerca per query "${userInputs.query}" in corso.. `);
-        const queries = userInputs.query.split(',');
+        const queries = userInputs.query.split(',').map((query) => query.trim());
 
         for (query of queries) {
             const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs, query);
