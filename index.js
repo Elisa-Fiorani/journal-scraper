@@ -588,7 +588,7 @@ const cdsScaper = async (userInputs, query) => {
 
     if (lastPageNumber === 0) return { cdsScraperNews, cdsScraperErrors };
 
-    for (let i = 1; i <= 1; i++) {
+    for (let i = 1; i <= lastPageNumber; i++) {
         const urlWithPage = `https://www.corriere.it/ricerca/?q=${query}&page=${i}`;
 
         try {
@@ -612,6 +612,8 @@ const cdsScaper = async (userInputs, query) => {
                     try {
                         await page.goto(link, { waitUntil: 'networkidle2' });
                         await sleep(2000);
+                        
+                        
 
                         await page.waitForSelector('h1', { timeout: 10000 });
                         articleFetchSuccess = true;
@@ -780,7 +782,7 @@ const repubblicaScraper = async (userInputs, query) => {
     if (lastPageNumber === 0) return { repubblicaScraperNews, repubblicaScraperErrors };
 
     // Scraping delle pagine principali e articoli
-    for (let i = 1; i <= 1; i++) {
+    for (let i = 1; i <= lastPageNumber; i++) {
         const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
 
         try {
@@ -836,6 +838,28 @@ const repubblicaScraper = async (userInputs, query) => {
                         await sleep(2000);
 
                         await page.waitForSelector('h1', { timeout: 10000 });
+
+                        // Controlla se esiste il link "Log In"
+                        const loginPresent = await page.evaluate(() => {
+                            const loginElement = document.querySelector('a.dropdown-item[href="/mma"]');
+                            return !!loginElement;
+                        });
+                        
+                        if (loginPresent) {
+                            try {
+                                const session = await refreshBrowserAndLogin(userInputs);
+                                browser = session.browser;
+                                page = session.page;
+                                // Ripeti il caricamento della stessa pagina dopo il login
+                                await page.goto(article.link, { waitUntil: 'networkidle2' });
+                                await page.waitForTimeout(2000);
+                            } catch (refreshError) {
+                                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                                return { cdsScraperNews, cdsScraperErrors };
+                            }
+                            await sleep(3000); // Attesa prima di riprovare
+                        }
+
                         articleFetchSuccess = true;
                     } catch (error) {
                         articleAttempts++;
@@ -1031,9 +1055,6 @@ const liberoScraper = async (browser, query) => {
         // Chiedi parametri in input all'utente
         const userInputs = await collectUserInputs();
 
-        // Avvia il browser
-        const browser = await initializeBrowser();
-
         consoleInfo(`Ricerca per query "${userInputs.query}" in corso.. `);
         const queries = userInputs.query.split(',').map((query) => query.trim());
 
@@ -1049,9 +1070,6 @@ const liberoScraper = async (browser, query) => {
             // allLiberoScraperErrors[query] = liberoScraperErrors;
         }
 
-
-        // Chiudi il browser
-        await browser.close();
 
         // Configurazione di csv-writer
         const csvWriter = createObjectCsvWriter({
