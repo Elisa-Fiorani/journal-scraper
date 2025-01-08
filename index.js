@@ -77,6 +77,70 @@ const askHiddenInput = (query) => {
     });
 };
 
+const initializePage = async (browser) => {
+    const blockedURLs = [
+        'services.insurads.com',
+        'securepubads.g.doubleclick.net',
+        'dt.adsafeprotected.com',
+        'metrics.brightcove.com',
+        'oasjs.kataweb.it',
+        'pagead2.googlesyndication.com',
+        'www.googleadservices.com',
+        'secure-it.imrworldwide.com',
+        'jadsver.postrelease.com',
+        'simage2.pubmatic.com',
+        'criteo-sync.teads.tv',
+        'sync-criteo.ads.yieldmo.com',
+        'cdn.insurads.com',
+        'c.amazon-adsystem.com',
+        'fundingchoicesmessages.google.com',
+        'pubads.g.doubleclick.net',
+        'advertiser.wbrtk.net/js/prebid-ads.js',
+        'des.smartclip.net'
+    ];
+
+    try {
+        // Crea una nuova pagina
+        const page = await browser.newPage();
+
+        // Imposta il viewport sulla pagina
+        await page.setViewport({
+            width: 1920,
+            height: 1080,
+            deviceScaleFactor: 1
+        });
+
+        // Attiva l'intercettazione delle richieste
+        await page.setRequestInterception(true);
+
+        // Gestisce il blocco di URL specifici
+        page.on('request', (request) => {
+            const url = request.url();
+            if (blockedURLs.some(blocked => url.includes(blocked))) {
+                request.abort(); // Blocca la richiesta
+            } else {
+                request.continue(); // Continua con le altre richieste
+            }
+        });
+
+        return page;
+    } catch (error) {
+        console.error("Errore durante l'inizializzazione della pagina:", error.message);
+        throw error;
+    }
+};
+
+const initializeBrowser = async () => {
+    try {
+        // Avvia il browser
+        const browser = await puppeteer.launch({ headless: false });
+        return browser;
+    } catch (error) {
+        console.error("Errore durante l'inizializzazione del browser:", error.message);
+        throw error; // Rilancia l'errore se non è possibile inizializzare il browser
+    }
+};
+
 
 const getTitle = async (page, journal) => {
     const cdsSelectors = ['h1.title-art-hp', 'h1.title-art', 'h1.article-title', 'h1.title']; // Lista dei possibili selettori
@@ -372,271 +436,411 @@ const loginRepubblica = async (page, userInputs) => {
 // Funzione per aggiungere un timeout
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const cdsScaper = async (page, userInputs, query) => {
+const cdsScaper = async (browser, userInputs, query) => {
     const cdsScraperNews = [];
     const cdsScraperErrors = [];
-    
-    // Eseguo il login sulla fonte delle notizie
-    const sessionLoginCds = await loginCds(page, userInputs);
-
-    if (!sessionLoginCds) return { cdsScraperNews, cdsScraperErrors };
+    const maxRetries = 10;
 
     consoleInfo(`Ricerca su "Corriere della Sera" per query "${query}" in corso...`);
-    
-    const url = `https://www.corriere.it/ricerca/?q=${query}`;
 
-    // Vai alla pagina specificata
-    await page.goto(url, { waitUntil: 'networkidle2' });
+    let loginAttempts = 0;
+    let loginSuccess = false;
 
-    // Aspetta che il contenuto delle notizie sia visibile
-    await page.waitForSelector('.pagination-list');
+    // Tentativi per il login
+    let page = await initializePage(browser); // Inizializza la prima scheda
 
-    const lastPageNumber = await page.$eval('.pagination-list li:last-child a', el => {
-        return parseInt(el.textContent.trim(), 10); // Converte direttamente il testo in un numero
-    });
+    // Tentativi per il login
+    while (loginAttempts < maxRetries && !loginSuccess) {
+        try {
+            consoleInfo(`Tentativo di login su "Corriere della Sera" (${loginAttempts + 1}/${maxRetries})...`);
 
-    if (lastPageNumber > 0) {
-        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Corriere della Sera" per la query "${query}"`);
-    } else {
-        console.warn(`Non sono stati trovati risulati su "Corriere della Sera" per la query "${query}"`)
+            const sessionLoginCds = await loginCds(page, userInputs);
+
+            if (!sessionLoginCds) {
+                throw new Error("Login non riuscito su 'Corriere della Sera'");
+            }
+
+            loginSuccess = true;
+        } catch (error) {
+            loginAttempts++;
+            console.warn(`Tentativo ${loginAttempts}/${maxRetries} di login fallito su "Corriere della Sera": ${error.message}`);
+
+            if (loginAttempts >= maxRetries) {
+                const errorMessage = `Errore massimo tentativi raggiunti per il login su "Corriere della Sera": ${error.message}`;
+                cdsScraperErrors.push(errorMessage);
+                console.warn(errorMessage);
+                return { cdsScraperNews, cdsScraperErrors }; // Interrompi il processo
+            } else {
+                await page.close(); // Chiudi la scheda corrente
+                page = await initializePage(browser); // Apri una nuova scheda
+                await sleep(3000); // Attesa prima di riprovare
+            }
+        }
     }
+
+    let attempts = 0;
+    let lastPageNumber = 0;
+    let pageFetchSuccess = false;
+
+    // Tentativi per ottenere il numero di pagine
+    while (attempts < maxRetries && !pageFetchSuccess) {
+        try {
+            const url = `https://www.corriere.it/ricerca/?q=${query}`;
+            await page.goto(url, { waitUntil: 'networkidle2' });
+            await sleep(3000); // Attesa esplicita
+
+            await page.waitForSelector('.pagination-list', { timeout: 10000 });
+
+            lastPageNumber = await page.$eval('.pagination-list li:last-child a', el =>
+                parseInt(el.textContent.trim(), 10)
+            );
+
+            if (lastPageNumber > 0) {
+                consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Corriere della Sera" per la query "${query}".`);
+            } else {
+                console.warn(`Non sono stati trovati risultati su "Corriere della Sera" per la query "${query}".`);
+            }
+
+            pageFetchSuccess = true;
+        } catch (error) {
+            attempts++;
+            console.warn(`Tentativo ${attempts}/${maxRetries} fallito per ottenere il numero di pagine su "Corriere della Sera": ${error.message}`);
+
+            if (attempts >= maxRetries) {
+                const errorMessage = `Errore massimo tentativi raggiunti per ottenere il numero di pagine su "Corriere della Sera": ${error.message}`;
+                cdsScraperErrors.push(errorMessage);
+                console.warn(errorMessage);
+                return { cdsScraperNews, cdsScraperErrors }; // Interrompi il processo
+            } else {
+                await page.close(); // Chiudi la scheda corrente
+                page = await initializePage(browser); // Apri una nuova scheda
+                await sleep(3000); // Attesa prima di riprovare
+            }
+        }
+    }
+
+    if (lastPageNumber === 0) return { cdsScraperNews, cdsScraperErrors };
 
     for (let i = 1; i <= lastPageNumber; i++) {
-
-        // Definisco l'URL per la fonte di notizie
         const urlWithPage = `https://www.corriere.it/ricerca/?q=${query}&page=${i}`;
 
-        // Vai alla pagina specificata
-        await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+        try {
+            await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+            await sleep(2000);
 
-        // Aspetta che il contenuto delle notizie sia visibile
-        await page.waitForSelector('.paginationResult');
+            await page.waitForSelector('.paginationResult', { timeout: 10000 });
 
-        // Estrai i titoli e i link delle notizie
-        const links = await page.$$eval('.bck-media-news-signature h3 a', anchors =>
-            anchors.map(anchor => anchor.href)
-        );
-        
-        for (const link of links) {
-            try {
-                // Vai alla pagina dell'articolo
-                await page.goto(link, { waitUntil: 'networkidle2' });
+            const links = await page.$$eval('.bck-media-news-signature h3 a', anchors =>
+                anchors.map(anchor => anchor.href)
+            );
 
-                // Estrarre i dettagli dell'articolo
-                const title = await getTitle(page, 'cds');
-                const { published, updated } = await getDates(page,'cds');
-                const date = updated || published;
-                const text = await getText(page, 'cds');
-                const event = determineEvent(query);
+            consoleInfo(`Trovati ${links.length} articoli nella pagina ${i} su "Corriere della Sera".`);
 
-                // Aggiungi i dati estratti all'array globale
-                cdsScraperNews.push({
-                    id: cdsScraperNews.length + 1,
-                    journal: 'cds',
-                    event,
-                    date,
-                    title: title,
-                    text: text,
-                    link
-                });
-                
-                consoleSuccess(`Articolo aggiunto da "Corriere della Sera": ${title}`);
+            for (const link of links) {
+                let articleAttempts = 0;
+                let articleFetchSuccess = false;
 
-            } catch (error) {
-                const errorMessage = `Errore nell'estrazione dell'articolo da "Corriere della Sera": ${link} - ${error.message}`;
-                cdsScraperErrors.push(errorMessage)
-                console.warn(errorMessage);
+                while (articleAttempts < maxRetries && !articleFetchSuccess) {
+                    try {
+                        await page.goto(link, { waitUntil: 'networkidle2' });
+                        await sleep(2000);
+
+                        await page.waitForSelector('h1', { timeout: 10000 });
+
+                        const title = await getTitle(page, 'cds');
+                        const { published, updated } = await getDates(page, 'cds');
+                        const date = updated || published;
+                        const text = await getText(page, 'cds');
+                        const event = determineEvent(query);
+
+                        cdsScraperNews.push({
+                            id: cdsScraperNews.length + 1,
+                            journal: 'cds',
+                            event,
+                            date,
+                            title,
+                            text,
+                            link,
+                        });
+
+                        consoleSuccess(`Articolo aggiunto su "Corriere della Sera": ${title}`);
+                        articleFetchSuccess = true;
+                    } catch (error) {
+                        articleAttempts++;
+                        console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "Corriere della Sera": ${link} - ${error.message}`);
+
+                        if (articleAttempts >= maxRetries) {
+                            const errorMessage = `Errore massimo tentativi raggiunti per articolo su "Corriere della Sera": ${link} - ${error.message}`;
+                            cdsScraperErrors.push(errorMessage);
+                            console.warn(errorMessage);
+                        } else {
+                            await page.close(); // Chiudi la scheda corrente
+                            page = await initializePage(browser); // Apri una nuova scheda
+                            await sleep(3000); // Attesa prima di riprovare
+                        }
+                    }
+                }
             }
-            await sleep(3000);
+        } catch (error) {
+            const errorMessage = `Errore durante il processamento della pagina ${i} su "Corriere della Sera": ${error.message}`;
+            cdsScraperErrors.push(errorMessage);
+            console.warn(errorMessage);
         }
 
-        consoleInfo(`Pagina ${i} su "Corriere della Sera" processata con successo.`);
+        consoleInfo(`Pagina ${i}/${lastPageNumber} su "Corriere della Sera" processata con successo.`);
     }
-    return { cdsScraperNews, cdsScraperErrors };
 
+    await page.close(); // Chiudi la scheda corrente
+
+    return { cdsScraperNews, cdsScraperErrors };
 };
 
-const repubblicaScraper = async (page, userInputs, query) => {
+let sessionLoginRepubblica = false;
+
+const repubblicaScraper = async (browser, userInputs, query) => {
     const repubblicaScraperNews = [];
     const repubblicaScraperErrors = [];
-
-    // Eseguo il login su Repubblica
-    const sessionLoginRepubblica = await loginRepubblica(page, userInputs);
-
-    if (!sessionLoginRepubblica) return { repubblicaScraperNews, repubblicaScraperErrors };
+    const maxRetries = 10;
 
     consoleInfo(`Ricerca su "La Repubblica" per query "${query}" in corso...`);
 
-    const url = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
+    let page = await initializePage(browser);
 
-    // Vai alla pagina specificata
-    await page.goto(url, { waitUntil: 'networkidle2' });
+    // Login con tentativi
+    let loginAttempts = 0;
+    while (loginAttempts < maxRetries && !sessionLoginRepubblica) {
+        try {
+            consoleInfo(`Tentativo di login su "La Repubblica" (${loginAttempts + 1}/${maxRetries})...`);
+            sessionLoginRepubblica = await loginRepubblica(page, userInputs);
 
-    // Aspetta che il contenuto delle paginazione sia visibile
-    await page.waitForSelector('.pagination');
+            if (!sessionLoginRepubblica) {
+                throw new Error("Login non riuscito su 'La Repubblica'");
+            }
+        } catch (error) {
+            loginAttempts++;
+            console.warn(`Tentativo ${loginAttempts}/${maxRetries} di login fallito su "La Repubblica": ${error.message}`);
 
-    const lastPageNumber = await page.$eval('.pagination p', el => {
-        // Estrai solo il numero dopo "di"
-        const match = el.textContent.match(/di\s+(\d+)/); // Trova il numero dopo "di"
-        return match ? parseInt(match[1], 10) : 0; // Converte il numero trovato in un intero
-    });
-
-    if (lastPageNumber > 0) {
-        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "La Repubblica" per la query "${query}"`);
-    } else {
-        console.warn(`Non sono stati trovati risulati su "La Repubblica" per la query "${query}"`)
-    }
-
-    for (let i = 1; i <= lastPageNumber; i++) {
-
-        // Definisco l'URL per la fonte di notizie
-        const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
-        
-        // Vai alla pagina specificata
-        await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
-
-        // Aspetta che il contenuto delle notizie sia visibile
-        await page.waitForSelector('#lista-risultati');
-
-        // Estrai link, titoli e date
-        const articles = await page.$$eval('#lista-risultati article h1 a', (anchors) => {
-            return anchors.map(anchor => {
-                const article = {
-                    link: anchor.href, // Link all'articolo
-                };
-
-                // Trova il contenitore dell'articolo per cercare le date
-                const container = anchor.closest('article'); // Assumi che gli articoli siano racchiusi in <article>
-                if (container) {
-                    // Cerca le date in "aside.correlati"
-                    const correlati = container.querySelector('aside.correlati a time');
-                    const correlatiExtra = container.querySelector('aside.correlati-extra a time');
-                    let date;
-
-                    if (correlati) {
-                        date = correlati.textContent.trim();
-                    }
-
-                    if (correlatiExtra) {
-                        date = correlatiExtra.textContent.trim();
-                    }
-
-                    // Aggiungi tutte le date trovate
-                    article.date = date;
-                }
-
-                return article;
-            });
-        });
-
-        for (const article of articles) {
-            try {
-                // Vai alla pagina dell'articolo
-                await page.goto(article.link, { waitUntil: 'networkidle2' });
-
-                // Estrarre i dettagli dell'articolo
-                const title = await getTitle(page, 'repubblica');
-                const { published, updated } = extractDates(article.date);
-                const date = updated || published;
-                const text = await getText(page, 'repubblica');
-                const event = determineEvent(query);
-
-                // Aggiungi i dati estratti all'array globale
-                repubblicaScraperNews.push({
-                    id: repubblicaScraperNews.length + 1,
-                    journal: 'repubblica',
-                    event,
-                    date,
-                    title: title,
-                    text: text,
-                    link: article.link
-                });
-                
-                consoleSuccess(`Articolo aggiunto da "La Repubblica": ${title}`);
-
-            } catch (error) {
-                const errorMessage = `Errore nell'estrazione dell'articolo da "La Repubblica": ${article.link} - ${error.message}`;
+            if (loginAttempts >= maxRetries) {
+                const errorMessage = `Errore massimo tentativi raggiunti per il login su "La Repubblica": ${error.message}`;
                 repubblicaScraperErrors.push(errorMessage);
                 console.warn(errorMessage);
+                return { repubblicaScraperNews, repubblicaScraperErrors };
+            } else {
+                await page.close();
+                page = await initializePage(browser);
+                await sleep(3000);
             }
-            await sleep(3000);
         }
-
-        consoleInfo(`Pagina ${i} su "La Repubblica" processata con successo.`);
     }
 
-    return { repubblicaScraperNews, repubblicaScraperErrors };
-}
+    // Ottieni il numero di pagine con tentativi
+    let attempts = 0;
+    let lastPageNumber = 0;
+    let pageFetchSuccess = false;
 
-const liberoScraper = async (page, query) => {
+    while (attempts < maxRetries && !pageFetchSuccess) {
+        try {
+            const url = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
+            await page.goto(url, { waitUntil: 'networkidle2' });
+            await page.waitForSelector('.pagination');
+
+            lastPageNumber = await page.$eval('.pagination p', el => {
+                const match = el.textContent.match(/di\s+(\d+)/);
+                return match ? parseInt(match[1], 10) : 0;
+            });
+
+            if (lastPageNumber > 0) {
+                consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "La Repubblica" per la query "${query}".`);
+            } else {
+                console.warn(`Non sono stati trovati risultati su "La Repubblica" per la query "${query}".`);
+            }
+
+            pageFetchSuccess = true;
+        } catch (error) {
+            attempts++;
+            console.warn(`Tentativo ${attempts}/${maxRetries} fallito per ottenere il numero di pagine su "La Repubblica": ${error.message}`);
+
+            if (attempts >= maxRetries) {
+                const errorMessage = `Errore massimo tentativi raggiunti per ottenere il numero di pagine su "La Repubblica": ${error.message}`;
+                repubblicaScraperErrors.push(errorMessage);
+                console.warn(errorMessage);
+                return { repubblicaScraperNews, repubblicaScraperErrors };
+            } else {
+                await page.close();
+                page = await initializePage(browser);
+                await sleep(3000);
+            }
+        }
+    }
+
+    // Scraping delle pagine principali e articoli
+    for (let i = 1; i <= lastPageNumber; i++) {
+        const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
+        let pageAttempts = 0;
+        let pageSuccess = false;
+
+        while (pageAttempts < maxRetries && !pageSuccess) {
+            try {
+                await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+                await page.waitForSelector('#lista-risultati');
+
+                const articles = await page.$$eval('#lista-risultati article h1 a', anchors =>
+                    anchors.map(anchor => ({ link: anchor.href }))
+                );
+
+                for (const article of articles) {
+                    let articleAttempts = 0;
+                    let articleSuccess = false;
+
+                    while (articleAttempts < maxRetries && !articleSuccess) {
+                        try {
+                            await page.goto(article.link, { waitUntil: 'networkidle2' });
+                            const title = await getTitle(page, 'repubblica');
+                            const text = await getText(page, 'repubblica');
+                            const event = determineEvent(query);
+
+                            repubblicaScraperNews.push({
+                                id: repubblicaScraperNews.length + 1,
+                                journal: 'repubblica',
+                                event,
+                                title,
+                                text,
+                                link: article.link,
+                            });
+
+                            consoleSuccess(`Articolo aggiunto da "La Repubblica": ${title}`);
+                            articleSuccess = true;
+                        } catch (error) {
+                            articleAttempts++;
+                            console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "La Repubblica": ${article.link} - ${error.message}`);
+
+                            if (articleAttempts >= maxRetries) {
+                                const errorMessage = `Errore massimo tentativi raggiunti per articolo su "La Repubblica": ${article.link} - ${error.message}`;
+                                repubblicaScraperErrors.push(errorMessage);
+                                console.warn(errorMessage);
+                            } else {
+                                await page.close();
+                                page = await initializePage(browser);
+                                await sleep(3000);
+                            }
+                        }
+                    }
+                }
+                pageSuccess = true;
+            } catch (error) {
+                pageAttempts++;
+                console.warn(`Tentativo ${pageAttempts}/${maxRetries} fallito per la pagina ${i} su "La Repubblica": ${error.message}`);
+
+                if (pageAttempts >= maxRetries) {
+                    const errorMessage = `Errore massimo tentativi raggiunti per la pagina ${i} su "La Repubblica": ${error.message}`;
+                    repubblicaScraperErrors.push(errorMessage);
+                    console.warn(errorMessage);
+                } else {
+                    await page.close();
+                    page = await initializePage(browser);
+                    await sleep(3000);
+                }
+            }
+        }
+    }
+
+    await page.close(); // Chiudi la scheda corrente
+
+    return { repubblicaScraperNews, repubblicaScraperErrors };
+};
+
+
+const liberoScraper = async (browser, query) => {
     const liberoScraperNews = [];
     const liberoScraperErrors = [];
+    const maxRetries = 10;
 
     consoleInfo(`Ricerca su "Libero" per query "${query}" in corso...`);
 
     const lastPageNumber = 46;
 
-    const event = determineEvent(query);
-
     if (lastPageNumber > 0) {
-        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Libero" per la query "${event}"`);
+        consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Libero" per la query "${query}".`);
     } else {
-        console.warn(`Non sono stati trovati risulati su "Libero" per la query "${event}"`)
+        console.warn(`Non sono stati trovati risultati su "Libero" per la query "${query}".`);
+        return { liberoScraperNews, liberoScraperErrors };
     }
+
+    let page = await initializePage(browser);
 
     for (let i = 1; i <= lastPageNumber; i++) {
+        const urlWithPage = `https://www.liberoquotidiano.it/search/page/${i}/?keyword=${query}&sortField=pubdate`;
+        let pageAttempts = 0;
+        let pageSuccess = false;
 
-        const urlWithPage = `https://www.liberoquotidiano.it/search/page/${i}/?keyword=${event}&sortField=pubdate`;
-        // Vai alla pagina specificata
-        await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
-
-        // Aspetta che il contenuto delle notizie sia visibile
-        await page.waitForSelector('.news-list-container');
-
-        // Estrai i titoli e i link delle notizie
-        const links = await page.$$eval('.news-list-container article header h2 a', anchors =>
-            anchors.map(anchor => anchor.href)
-        );
-
-        for (const link of links) {
+        while (pageAttempts < maxRetries && !pageSuccess) {
             try {
-                // Vai alla pagina dell'articolo
-                await page.goto(link, { waitUntil: 'networkidle2' });
+                await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+                await page.waitForSelector('.news-list-container');
 
-                // Estrarre i dettagli dell'articolo
-                const title = await getTitle(page, 'libero');
-                const { published, updated } = await getDates(page, 'libero');
-                const date = updated || published;
-                const text = await getText(page, 'libero');
-                const event = determineEvent(query);
+                const links = await page.$$eval('.news-list-container article header h2 a', anchors =>
+                    anchors.map(anchor => anchor.href)
+                );
 
-                // Aggiungi i dati estratti all'array globale
-                liberoScraperNews.push({
-                    id: liberoScraperNews.length + 1,
-                    journal: 'libero',
-                    event,
-                    date,
-                    title: title,
-                    text: text,
-                    link
-                });
-                
-                consoleSuccess(`Articolo aggiunto da "Libero": ${title}`);
+                for (const link of links) {
+                    let articleAttempts = 0;
+                    let articleSuccess = false;
 
+                    while (articleAttempts < maxRetries && !articleSuccess) {
+                        try {
+                            await page.goto(link, { waitUntil: 'networkidle2' });
+                            const title = await getTitle(page, 'libero');
+                            const text = await getText(page, 'libero');
+                            const event = determineEvent(query);
+
+                            liberoScraperNews.push({
+                                id: liberoScraperNews.length + 1,
+                                journal: 'libero',
+                                event,
+                                title,
+                                text,
+                                link,
+                            });
+
+                            consoleSuccess(`Articolo aggiunto da "Libero": ${title}`);
+                            articleSuccess = true;
+                        } catch (error) {
+                            articleAttempts++;
+                            console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "Libero": ${link} - ${error.message}`);
+
+                            if (articleAttempts >= maxRetries) {
+                                const errorMessage = `Errore massimo tentativi raggiunti per articolo su "Libero": ${link} - ${error.message}`;
+                                liberoScraperErrors.push(errorMessage);
+                            } else {
+                                await page.close();
+                                page = await initializePage(browser);
+                                await sleep(3000);
+                            }
+                        }
+                    }
+                }
+                pageSuccess = true;
             } catch (error) {
-                const errorMessage = `Errore nell'estrazione dell'articolo da "Libero": ${link} - ${error.message}`;
-                liberoScraperErrors.push(errorMessage)
-                console.warn(errorMessage);
+                pageAttempts++;
+                console.warn(`Tentativo ${pageAttempts}/${maxRetries} fallito per la pagina ${i} su "Libero": ${error.message}`);
+
+                if (pageAttempts >= maxRetries) {
+                    const errorMessage = `Errore massimo tentativi raggiunti per la pagina ${i} su "Libero": ${error.message}`;
+                    liberoScraperErrors.push(errorMessage);
+                } else {
+                    await page.close();
+                    page = await initializePage(browser);
+                    await sleep(3000);
+                }
             }
-            await sleep(3000);
         }
-
-        consoleInfo(`Pagina ${i} su "Libero" processata con successo.`);
-
     }
 
+    await page.close(); // Chiudi la scheda corrente
+
     return { liberoScraperNews, liberoScraperErrors };
-}
+};
+
 
 (async () => {
     try {
@@ -653,60 +857,19 @@ const liberoScraper = async (page, query) => {
         const userInputs = await collectUserInputs();
 
         // Avvia il browser
-        const browser = await puppeteer.launch({ headless: true });
-        
-        const page = await browser.newPage();
-
-        // Imposta il viewport sulla pagina
-        await page.setViewport({
-            width: 1920,
-            height: 1080,
-            deviceScaleFactor: 1
-        });
-
-        const blockedURLs = [
-            'services.insurads.com',
-            'securepubads.g.doubleclick.net',
-            'dt.adsafeprotected.com',
-            'metrics.brightcove.com',
-            'oasjs.kataweb.it',
-            'pagead2.googlesyndication.com',
-            'www.googleadservices.com',
-            'secure-it.imrworldwide.com',
-            'jadsver.postrelease.com',
-            'simage2.pubmatic.com',
-            'criteo-sync.teads.tv',
-            'sync-criteo.ads.yieldmo.com',
-            'cdn.insurads.com',
-            'c.amazon-adsystem.com',
-            'fundingchoicesmessages.google.com',
-            'pubads.g.doubleclick.net',
-            'advertiser.wbrtk.net/js/prebid-ads.js',
-            'des.smartclip.net'
-        ];        
-        
-        await page.setRequestInterception(true);
-        
-        page.on('request', (request) => {
-            const url = request.url();
-            if (blockedURLs.some(blocked => url.includes(blocked))) {
-                request.abort(); // Blocca la richiesta
-            } else {
-                request.continue(); // Continua con le altre richieste
-            }
-        });
+        const browser = await initializeBrowser();
 
         consoleInfo(`Ricerca per query "${userInputs.query}" in corso.. `);
         const queries = userInputs.query.split(',').map((query) => query.trim());
 
         for (query of queries) {
-            const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(page, userInputs, query);
+            const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(browser, userInputs, query);
             allCdsScraperNews.push(cdsScraperNews);
             allCdsScraperErrors[query] = cdsScraperErrors;
-            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(page, userInputs, query);
+            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(browser, userInputs, query);
             allRepubblicaScraperNews.push(repubblicaScraperNews);
             allRepubblicaScraperErrors[query] = repubblicaScraperErrors;
-            const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(page, query);
+            const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(browser, query);
             allLiberoScraperNews.push(liberoScraperNews);
             allLiberoScraperErrors[query] = liberoScraperErrors;
         }
