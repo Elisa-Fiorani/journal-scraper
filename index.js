@@ -134,6 +134,7 @@ const initializeBrowser = async () => {
     try {
         // Avvia il browser
         const browser = await puppeteer.launch({ headless: false });
+        await sleep(3000);
         return browser;
     } catch (error) {
         console.error("Errore durante l'inizializzazione del browser:", error.message);
@@ -436,46 +437,100 @@ const loginRepubblica = async (page, userInputs) => {
 // Funzione per aggiungere un timeout
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const cdsScaper = async (browser, userInputs, query) => {
-    const cdsScraperNews = [];
-    const cdsScraperErrors = [];
-    const maxRetries = 10;
-
-    consoleInfo(`Ricerca su "Corriere della Sera" per query "${query}" in corso...`);
-
+const refreshBrowserAndLogin = async (userInputs) => {
+    const maxRetries = 10; // Numero massimo di tentativi per i login
     let loginAttempts = 0;
-    let loginSuccess = false;
+    let cdsLoginSuccess = false;
+    let repubblicaLoginSuccess = false;
 
-    // Tentativi per il login
-    let page = await initializePage(browser); // Inizializza la prima scheda
+    // Reinizializza il browser
+    const browser = await initializeBrowser();
+    await sleep(3000);
+    let page = await initializePage(browser);
 
-    // Tentativi per il login
-    while (loginAttempts < maxRetries && !loginSuccess) {
+    // Tentativi di login su "Corriere della Sera"
+    while (loginAttempts < maxRetries && !cdsLoginSuccess) {
         try {
             consoleInfo(`Tentativo di login su "Corriere della Sera" (${loginAttempts + 1}/${maxRetries})...`);
 
-            const sessionLoginCds = await loginCds(page, userInputs);
+            cdsLoginSuccess = await loginCds(page, userInputs);
 
-            if (!sessionLoginCds) {
+            if (!cdsLoginSuccess) {
                 throw new Error("Login non riuscito su 'Corriere della Sera'");
             }
 
-            loginSuccess = true;
         } catch (error) {
             loginAttempts++;
             console.warn(`Tentativo ${loginAttempts}/${maxRetries} di login fallito su "Corriere della Sera": ${error.message}`);
 
             if (loginAttempts >= maxRetries) {
                 const errorMessage = `Errore massimo tentativi raggiunti per il login su "Corriere della Sera": ${error.message}`;
-                cdsScraperErrors.push(errorMessage);
                 console.warn(errorMessage);
-                return { cdsScraperNews, cdsScraperErrors }; // Interrompi il processo
+                await browser.close();
+                throw new Error(errorMessage); // Interrompi il processo
             } else {
-                await page.close(); // Chiudi la scheda corrente
+                if (page && !page.isClosed()) {
+                    await page.close(); // Chiudi la scheda corrente
+                }
                 page = await initializePage(browser); // Apri una nuova scheda
                 await sleep(3000); // Attesa prima di riprovare
             }
         }
+    }
+
+    await sleep(3000);
+
+    // Esegui il login su "La Repubblica"
+    while (loginAttempts < maxRetries && !repubblicaLoginSuccess) {
+        try {
+            consoleInfo(`Tentativo di login su "La Repubblica" (${loginAttempts + 1}/${maxRetries})...`);
+            repubblicaLoginSuccess = await loginRepubblica(page, userInputs);
+            if (!repubblicaLoginSuccess) {
+                throw new Error('Login non riuscito su "La Repubblica"');
+            }
+
+        } catch (error) {
+            loginAttempts++;
+            console.warn(`Tentativo ${loginAttempts}/${maxRetries} di login fallito su "La Repubblica": ${error.message}`);
+
+            if (loginAttempts >= maxRetries) {
+                const errorMessage = `Errore massimo tentativi raggiunti per il login su "La Repubblica": ${error.message}`;
+                console.warn(errorMessage);
+                await browser.close();
+                throw new Error(errorMessage); // Interrompi il processo
+            } else {
+                if (page && !page.isClosed()) {
+                    await page.close(); // Chiudi la scheda corrente
+                }
+                page = await initializePage(browser); // Apri una nuova scheda
+                await sleep(3000); // Attesa prima di riprovare
+            }
+        }
+    }
+
+    return { browser, page };
+};
+
+
+
+const cdsScaper = async (userInputs, query) => {
+    const cdsScraperNews = [];
+    const cdsScraperErrors = [];
+    const maxRetries = 10;
+
+    consoleInfo(`Ricerca su "Corriere della Sera" per query "${query}" in corso...`);
+
+    let page;
+    let browser;
+
+    // Inizializza il browser e la pagina
+    try {
+        const session = await refreshBrowserAndLogin(userInputs);
+        browser = session.browser;
+        page = session.page;
+    } catch (error) {
+        console.error(`Errore durante l'inizializzazione del browser o il login: ${error.message}`);
+        return { cdsScraperNews, cdsScraperErrors };
     }
 
     let attempts = 0;
@@ -512,8 +567,20 @@ const cdsScaper = async (browser, userInputs, query) => {
                 console.warn(errorMessage);
                 return { cdsScraperNews, cdsScraperErrors }; // Interrompi il processo
             } else {
-                await page.close(); // Chiudi la scheda corrente
-                page = await initializePage(browser); // Apri una nuova scheda
+                if (page && !page.isClosed()) {
+                    await page.close();
+                }
+                if (browser && browser.connected) {
+                    await browser.close();
+                }
+                try {
+                    const session = await refreshBrowserAndLogin(userInputs);
+                    browser = session.browser;
+                    page = session.page;
+                } catch (refreshError) {
+                    console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                    return { cdsScraperNews, cdsScraperErrors };
+                }
                 await sleep(3000); // Attesa prima di riprovare
             }
         }
@@ -521,7 +588,7 @@ const cdsScaper = async (browser, userInputs, query) => {
 
     if (lastPageNumber === 0) return { cdsScraperNews, cdsScraperErrors };
 
-    for (let i = 1; i <= lastPageNumber; i++) {
+    for (let i = 1; i <= 1; i++) {
         const urlWithPage = `https://www.corriere.it/ricerca/?q=${query}&page=${i}`;
 
         try {
@@ -539,6 +606,7 @@ const cdsScaper = async (browser, userInputs, query) => {
             for (const link of links) {
                 let articleAttempts = 0;
                 let articleFetchSuccess = false;
+                let title, date, text, event;
 
                 while (articleAttempts < maxRetries && !articleFetchSuccess) {
                     try {
@@ -546,24 +614,6 @@ const cdsScaper = async (browser, userInputs, query) => {
                         await sleep(2000);
 
                         await page.waitForSelector('h1', { timeout: 10000 });
-
-                        const title = await getTitle(page, 'cds');
-                        const { published, updated } = await getDates(page, 'cds');
-                        const date = updated || published;
-                        const text = await getText(page, 'cds');
-                        const event = determineEvent(query);
-
-                        cdsScraperNews.push({
-                            id: cdsScraperNews.length + 1,
-                            journal: 'cds',
-                            event,
-                            date,
-                            title,
-                            text,
-                            link,
-                        });
-
-                        consoleSuccess(`Articolo aggiunto su "Corriere della Sera": ${title}`);
                         articleFetchSuccess = true;
                     } catch (error) {
                         articleAttempts++;
@@ -574,9 +624,46 @@ const cdsScaper = async (browser, userInputs, query) => {
                             cdsScraperErrors.push(errorMessage);
                             console.warn(errorMessage);
                         } else {
-                            await page.close(); // Chiudi la scheda corrente
-                            page = await initializePage(browser); // Apri una nuova scheda
+                            if (page && !page.isClosed()) {
+                                await page.close();
+                            }
+                            if (browser && browser.connected) {
+                                await browser.close();
+                            }
+                            try {
+                                const session = await refreshBrowserAndLogin(userInputs);
+                                browser = session.browser;
+                                page = session.page;
+                            } catch (refreshError) {
+                                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                                return { cdsScraperNews, cdsScraperErrors };
+                            }
                             await sleep(3000); // Attesa prima di riprovare
+                        }
+                    }
+
+                    if (articleFetchSuccess) {
+                        try {
+                            title = await getTitle(page, 'cds');
+                            const { published, updated } = await getDates(page, 'cds');
+                            date = updated || published;
+                            text = await getText(page, 'cds');
+                            event = determineEvent(query);
+    
+                            cdsScraperNews.push({
+                                id: cdsScraperNews.length + 1,
+                                journal: 'cds',
+                                event,
+                                date,
+                                title,
+                                text,
+                                link,
+                            });
+    
+                            consoleSuccess(`Articolo aggiunto su "Corriere della Sera": ${title}`);
+                        } catch (error) {
+                            console.warn(`Errore durante l'estrazione dei dati per l'articolo su "Corriere della Sera": ${link} - ${error.message}`);
+                            cdsScraperErrors.push(`Errore nell'estrazione dei dati per l'articolo ${link}: ${error.message}`);
                         }
                     }
                 }
@@ -585,64 +672,69 @@ const cdsScaper = async (browser, userInputs, query) => {
             const errorMessage = `Errore durante il processamento della pagina ${i} su "Corriere della Sera": ${error.message}`;
             cdsScraperErrors.push(errorMessage);
             console.warn(errorMessage);
+            if (page && !page.isClosed()) {
+                await page.close();
+            }
+            if (browser && browser.connected) {
+                await browser.close();
+            }
+            try {
+                const session = await refreshBrowserAndLogin(userInputs);
+                browser = session.browser;
+                page = session.page;
+            } catch (refreshError) {
+                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                return { cdsScraperNews, cdsScraperErrors };
+            }
+
         }
 
         consoleInfo(`Pagina ${i}/${lastPageNumber} su "Corriere della Sera" processata con successo.`);
     }
 
-    await page.close(); // Chiudi la scheda corrente
+    if (page && !page.isClosed()) {
+        await page.close();
+    }
 
+    if (browser && browser.connected) {
+        await browser.close();
+    }
+    
     return { cdsScraperNews, cdsScraperErrors };
 };
 
-let sessionLoginRepubblica = false;
-
-const repubblicaScraper = async (browser, userInputs, query) => {
+const repubblicaScraper = async (userInputs, query) => {
     const repubblicaScraperNews = [];
     const repubblicaScraperErrors = [];
     const maxRetries = 10;
 
     consoleInfo(`Ricerca su "La Repubblica" per query "${query}" in corso...`);
 
-    let page = await initializePage(browser);
+    let page;
+    let browser;
 
-    // Login con tentativi
-    let loginAttempts = 0;
-    while (loginAttempts < maxRetries && !sessionLoginRepubblica) {
-        try {
-            consoleInfo(`Tentativo di login su "La Repubblica" (${loginAttempts + 1}/${maxRetries})...`);
-            sessionLoginRepubblica = await loginRepubblica(page, userInputs);
-
-            if (!sessionLoginRepubblica) {
-                throw new Error("Login non riuscito su 'La Repubblica'");
-            }
-        } catch (error) {
-            loginAttempts++;
-            console.warn(`Tentativo ${loginAttempts}/${maxRetries} di login fallito su "La Repubblica": ${error.message}`);
-
-            if (loginAttempts >= maxRetries) {
-                const errorMessage = `Errore massimo tentativi raggiunti per il login su "La Repubblica": ${error.message}`;
-                repubblicaScraperErrors.push(errorMessage);
-                console.warn(errorMessage);
-                return { repubblicaScraperNews, repubblicaScraperErrors };
-            } else {
-                await page.close();
-                page = await initializePage(browser);
-                await sleep(3000);
-            }
-        }
+    // Inizializza il browser e la pagina
+    try {
+        const session = await refreshBrowserAndLogin(userInputs);
+        browser = session.browser;
+        page = session.page;
+    } catch (error) {
+        console.error(`Errore durante l'inizializzazione del browser o il login: ${error.message}`);
+        return { repubblicaScraperNews, repubblicaScraperErrors };
     }
 
-    // Ottieni il numero di pagine con tentativi
     let attempts = 0;
     let lastPageNumber = 0;
     let pageFetchSuccess = false;
 
+    // Tentativi per ottenere il numero di pagine
     while (attempts < maxRetries && !pageFetchSuccess) {
         try {
             const url = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
             await page.goto(url, { waitUntil: 'networkidle2' });
-            await page.waitForSelector('.pagination');
+            await sleep(3000);
+
+            await page.waitForSelector('.pagination', { timeout: 10000 });
 
             lastPageNumber = await page.$eval('.pagination p', el => {
                 const match = el.textContent.match(/di\s+(\d+)/);
@@ -666,88 +758,171 @@ const repubblicaScraper = async (browser, userInputs, query) => {
                 console.warn(errorMessage);
                 return { repubblicaScraperNews, repubblicaScraperErrors };
             } else {
-                await page.close();
-                page = await initializePage(browser);
-                await sleep(3000);
+                if (page && !page.isClosed()) {
+                    await page.close();
+                }
+                if (browser && browser.connected) {
+                    await browser.close();
+                }
+                try {
+                    const session = await refreshBrowserAndLogin(userInputs);
+                    browser = session.browser;
+                    page = session.page;
+                } catch (refreshError) {
+                    console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                    return { cdsScraperNews, cdsScraperErrors };
+                }
+                await sleep(3000); // Attesa prima di riprovare
             }
         }
     }
 
+    if (lastPageNumber === 0) return { repubblicaScraperNews, repubblicaScraperErrors };
+
     // Scraping delle pagine principali e articoli
-    for (let i = 1; i <= lastPageNumber; i++) {
+    for (let i = 1; i <= 1; i++) {
         const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
-        let pageAttempts = 0;
-        let pageSuccess = false;
 
-        while (pageAttempts < maxRetries && !pageSuccess) {
-            try {
-                await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
-                await page.waitForSelector('#lista-risultati');
+        try {
+            await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+            await sleep(2000);
 
-                const articles = await page.$$eval('#lista-risultati article h1 a', anchors =>
-                    anchors.map(anchor => ({ link: anchor.href }))
-                );
+            await page.waitForSelector('#lista-risultati', { timeout: 10000 });
 
-                for (const article of articles) {
-                    let articleAttempts = 0;
-                    let articleSuccess = false;
+            const links = await page.$$eval('#lista-risultati article h1 a', anchors =>
+                anchors.map(anchor => anchor.href)
+            );
 
-                    while (articleAttempts < maxRetries && !articleSuccess) {
+            const articles = await page.$$eval('#lista-risultati article h1 a', (anchors) => {
+                return anchors.map(anchor => {
+                    const article = {
+                        link: anchor.href, // Link all'articolo
+                    };
+    
+                    // Trova il contenitore dell'articolo per cercare le date
+                    const container = anchor.closest('article'); // Assumi che gli articoli siano racchiusi in <article>
+                    if (container) {
+                        // Cerca le date in "aside.correlati"
+                        const correlati = container.querySelector('aside.correlati a time');
+                        const correlatiExtra = container.querySelector('aside.correlati-extra a time');
+                        let date;
+    
+                        if (correlati) {
+                            date = correlati.textContent.trim();
+                        }
+    
+                        if (correlatiExtra) {
+                            date = correlatiExtra.textContent.trim();
+                        }
+    
+                        // Aggiungi tutte le date trovate
+                        article.date = date;
+                    }
+    
+                    return article;
+                });
+            });
+
+            consoleInfo(`Trovati ${Object.keys(articles).length} articoli nella pagina ${i} su "La Repubblica".`);
+
+            for (const article of articles) {
+                let articleAttempts = 0;
+                let articleFetchSuccess = false;
+                let title, text, event;
+
+                while (articleAttempts < maxRetries && !articleFetchSuccess) {
+                    try {
+                        await page.goto(article.link, { waitUntil: 'networkidle2' });
+                        await sleep(2000);
+
+                        await page.waitForSelector('h1', { timeout: 10000 });
+                        articleFetchSuccess = true;
+                    } catch (error) {
+                        articleAttempts++;
+                        console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "La Repubblica": ${article.link} - ${error.message}`);
+
+                        if (articleAttempts >= maxRetries) {
+                            const errorMessage = `Errore massimo tentativi raggiunti per articolo su "La Repubblica": ${article.link} - ${error.message}`;
+                            repubblicaScraperErrors.push(errorMessage);
+                            console.warn(errorMessage);
+                        } else {
+                            if (page && !page.isClosed()) {
+                                await page.close();
+                            }
+                            if (browser && browser.connected) {
+                                await browser.close();
+                            }
+                            try {
+                                const session = await refreshBrowserAndLogin(userInputs);
+                                browser = session.browser;
+                                page = session.page;
+                            } catch (refreshError) {
+                                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                                return { cdsScraperNews, cdsScraperErrors };
+                            }
+                            await sleep(3000); // Attesa prima di riprovare
+                        }
+                    }
+                    if (articleFetchSuccess) {
                         try {
-                            await page.goto(article.link, { waitUntil: 'networkidle2' });
-                            const title = await getTitle(page, 'repubblica');
-                            const text = await getText(page, 'repubblica');
-                            const event = determineEvent(query);
-
+                            title = await getTitle(page, 'repubblica');
+                            const { published, updated } = await extractDates(article.date);
+                            text = await getText(page, 'repubblica');
+                            event = determineEvent(query);
+    
                             repubblicaScraperNews.push({
                                 id: repubblicaScraperNews.length + 1,
                                 journal: 'repubblica',
                                 event,
+                                date: updated || published,
                                 title,
                                 text,
                                 link: article.link,
                             });
-
-                            consoleSuccess(`Articolo aggiunto da "La Repubblica": ${title}`);
-                            articleSuccess = true;
+    
+                            consoleSuccess(`Articolo aggiunto su "La Repubblica": ${title}`);
                         } catch (error) {
-                            articleAttempts++;
-                            console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "La Repubblica": ${article.link} - ${error.message}`);
-
-                            if (articleAttempts >= maxRetries) {
-                                const errorMessage = `Errore massimo tentativi raggiunti per articolo su "La Repubblica": ${article.link} - ${error.message}`;
-                                repubblicaScraperErrors.push(errorMessage);
-                                console.warn(errorMessage);
-                            } else {
-                                await page.close();
-                                page = await initializePage(browser);
-                                await sleep(3000);
-                            }
+                            console.warn(`Errore durante l'estrazione dei dati per l'articolo su "La Repubblica": ${article.link} - ${error.message}`);
+                            repubblicaScraperErrors.push(`Errore nell'estrazione dei dati per l'articolo ${article.link}: ${error.message}`);
                         }
                     }
                 }
-                pageSuccess = true;
-            } catch (error) {
-                pageAttempts++;
-                console.warn(`Tentativo ${pageAttempts}/${maxRetries} fallito per la pagina ${i} su "La Repubblica": ${error.message}`);
-
-                if (pageAttempts >= maxRetries) {
-                    const errorMessage = `Errore massimo tentativi raggiunti per la pagina ${i} su "La Repubblica": ${error.message}`;
-                    repubblicaScraperErrors.push(errorMessage);
-                    console.warn(errorMessage);
-                } else {
-                    await page.close();
-                    page = await initializePage(browser);
-                    await sleep(3000);
-                }
             }
+        } catch (error) {
+            const errorMessage = `Errore durante il processamento della pagina ${i} su "La Repubblica": ${error.message}`;
+            repubblicaScraperErrors.push(errorMessage);
+            console.warn(errorMessage);
+            if (page && !page.isClosed()) {
+                await page.close();
+            }
+            if (browser && browser.connected) {
+                await browser.close();
+            }
+            try {
+                const session = await refreshBrowserAndLogin(userInputs);
+                browser = session.browser;
+                page = session.page;
+            } catch (refreshError) {
+                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                return { cdsScraperNews, cdsScraperErrors };
+            }
+            await sleep(3000); // Attesa prima di riprovare
         }
+
+        consoleInfo(`Pagina ${i}/${lastPageNumber} su "La Repubblica" processata con successo.`);
     }
 
-    await page.close(); // Chiudi la scheda corrente
+    if (page && !page.isClosed()) {
+        await page.close();
+    }
+
+    if (browser && browser.connected) {
+        await browser.close();
+    }
 
     return { repubblicaScraperNews, repubblicaScraperErrors };
 };
+
 
 
 const liberoScraper = async (browser, query) => {
@@ -863,15 +1038,15 @@ const liberoScraper = async (browser, query) => {
         const queries = userInputs.query.split(',').map((query) => query.trim());
 
         for (query of queries) {
-            const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(browser, userInputs, query);
+            const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(userInputs, query);
             allCdsScraperNews.push(cdsScraperNews);
             allCdsScraperErrors[query] = cdsScraperErrors;
-            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(browser, userInputs, query);
+            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(userInputs, query);
             allRepubblicaScraperNews.push(repubblicaScraperNews);
             allRepubblicaScraperErrors[query] = repubblicaScraperErrors;
-            const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(browser, query);
-            allLiberoScraperNews.push(liberoScraperNews);
-            allLiberoScraperErrors[query] = liberoScraperErrors;
+            // const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(browser, query);
+            // allLiberoScraperNews.push(liberoScraperNews);
+            // allLiberoScraperErrors[query] = liberoScraperErrors;
         }
 
 
