@@ -732,7 +732,7 @@ const repubblicaScraper = async (userInputs, query) => {
     // Configura gli intervalli di date
     const startDate = new Date('2023-11-9');
     const endDate = new Date('2025-01-08');
-    const intervalDays = 1; // Suddividi in intervalli di 100 giorni
+    const intervalDays = 50; // Suddividi in intervalli di 100 giorni
 
     const dateRanges = [];
     let currentEndDate = new Date(endDate);
