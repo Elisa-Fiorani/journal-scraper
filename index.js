@@ -21,6 +21,10 @@ const collectUserInputs = async () => {
     const repubblicaPassword = await askHiddenInput('>> Password: ');
     console.log('>> Inserisci la query di ricerca (se più di una separate da ,)');
     const query = (await askQuestion('>> Query di Ricerca: ')).toLowerCase();
+    console.log('>> Inserisci i range di date per le query di ricerca in formato AAAA-MM-GG/AAAA-MM-GG (se più di una separate da ,)');
+    const dateRanges = await askQuestion('>> Range di date: ');
+    console.log('>> Inserisci il numero di pagine di risulati di "Libero" per le query di ricerca (se più di una separate da ,)');
+    const liberoPageNumbers = await askQuestion('>> Numero di pagine di risultati di "Libero" : ');
 
     return {
         cdsEmail,
@@ -28,6 +32,8 @@ const collectUserInputs = async () => {
         repubblicaEmail,
         repubblicaPassword,
         query,
+        dateRanges,
+        liberoPageNumbers
     };
 };
 
@@ -437,16 +443,21 @@ const loginRepubblica = async (page, userInputs) => {
 // Funzione per aggiungere un timeout
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const refreshBrowserAndLogin = async (userInputs) => {
-    const maxRetries = 10; // Numero massimo di tentativi per i login
-    let loginAttempts = 0;
-    let cdsLoginSuccess = false;
-    let repubblicaLoginSuccess = false;
-
+const refreshBrowser = async () => {
     // Reinizializza il browser
     const browser = await initializeBrowser();
     await sleep(3000);
     let page = await initializePage(browser);
+    return { browser, page }
+}
+
+const refreshBrowserAndLogin = async (userInputs) => {
+    let { browser, page } = await refreshBrowser();
+
+    const maxRetries = 10; // Numero massimo di tentativi per i login
+    let loginAttempts = 0;
+    let cdsLoginSuccess = false;
+    let repubblicaLoginSuccess = false;
 
     // Tentativi di login su "Corriere della Sera"
     while (loginAttempts < maxRetries && !cdsLoginSuccess) {
@@ -705,7 +716,7 @@ const cdsScaper = async (userInputs, query) => {
     return { cdsScraperNews, cdsScraperErrors };
 };
 
-const repubblicaScraper = async (userInputs, query) => {
+const repubblicaScraper = async (userInputs, query, dateRange) => {
     const repubblicaScraperNews = [];
     const repubblicaScraperErrors = [];
     const maxRetries = 10;
@@ -730,11 +741,11 @@ const repubblicaScraper = async (userInputs, query) => {
     let pageFetchSuccess = false;
 
     // Configura gli intervalli di date
-    const startDate = new Date('2023-11-9');
-    const endDate = new Date('2025-01-08');
+    const startDate = new Date(dateRange.fromDate);
+    const endDate = new Date(dateRange.toDate);
     const intervalDays = 50; // Suddividi in intervalli di 100 giorni
 
-    const dateRanges = [];
+    const intervalRanges = [];
     let currentEndDate = new Date(endDate);
 
     while (currentEndDate > startDate) {
@@ -744,7 +755,7 @@ const repubblicaScraper = async (userInputs, query) => {
             currentStartDate.setTime(startDate.getTime());
         }
 
-        dateRanges.push({
+        intervalRanges.push({
             fromDate: currentStartDate.toISOString().split('T')[0],
             toDate: currentEndDate.toISOString().split('T')[0],
         });
@@ -753,7 +764,7 @@ const repubblicaScraper = async (userInputs, query) => {
         currentEndDate.setDate(currentEndDate.getDate() - intervalDays - 1);
     }
 
-    for (const range of dateRanges) {
+    for (const range of intervalRanges) {
         // Tentativi per ottenere il numero di pagine
         while (attempts < maxRetries && !pageFetchSuccess) {
             try {
@@ -979,14 +990,26 @@ const repubblicaScraper = async (userInputs, query) => {
 
 
 
-const liberoScraper = async (browser, query) => {
+const liberoScraper = async (query, liberoPageNumber) => {
     const liberoScraperNews = [];
     const liberoScraperErrors = [];
     const maxRetries = 10;
 
     consoleInfo(`Ricerca su "Libero" per query "${query}" in corso...`);
 
-    const lastPageNumber = 46;
+    let page;
+    let browser;
+
+    try {
+        const session = await refreshBrowser();
+        browser = session.browser;
+        page = session.page;
+    } catch (error) {
+        console.error(`Errore durante l'inizializzazione del browser: ${error.message}`);
+        return { liberoScraperNews, liberoScraperErrors };
+    }
+
+    const lastPageNumber = liberoPageNumber;
 
     if (lastPageNumber > 0) {
         consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "Libero" per la query "${query}".`);
@@ -995,77 +1018,113 @@ const liberoScraper = async (browser, query) => {
         return { liberoScraperNews, liberoScraperErrors };
     }
 
-    let page = await initializePage(browser);
-
     for (let i = 1; i <= lastPageNumber; i++) {
-        const urlWithPage = `https://www.liberoquotidiano.it/search/page/${i}/?keyword=${query}&sortField=pubdate`;
-        let pageAttempts = 0;
-        let pageSuccess = false;
+        const urlWithPage = `https://www.liberoquotidiano.it/tag/${query}/page/${i}/`;
+        let title, text, event;
 
-        while (pageAttempts < maxRetries && !pageSuccess) {
-            try {
-                await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
-                await page.waitForSelector('.news-list-container');
+        try {
+            await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+            await sleep(2000);
 
-                const links = await page.$$eval('.news-list-container article header h2 a', anchors =>
-                    anchors.map(anchor => anchor.href)
-                );
+            await page.waitForSelector('.news-list-container');
 
-                for (const link of links) {
-                    let articleAttempts = 0;
-                    let articleSuccess = false;
+            const links = await page.$$eval('header > a:not(.share-button)', anchors =>
+                anchors.map(anchor => anchor.href)
+            );
 
-                    while (articleAttempts < maxRetries && !articleSuccess) {
+            for (const link of links) {
+                let articleAttempts = 0;
+                let articleSuccess = false;
+
+                while (articleAttempts < maxRetries && !articleSuccess) {
+                    try {
+                        await page.goto(link, { waitUntil: 'networkidle2' });
+                        await sleep(2000);
+
+                        await page.waitForSelector('h1', { timeout: 10000 });
+                        articleSuccess = true;
+                    } catch (error) {
+                        articleAttempts++;
+                        console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "Libero": ${link} - ${error.message}`);
+
+                        if (articleAttempts >= maxRetries) {
+                            const errorMessage = `Errore massimo tentativi raggiunti per articolo su "Libero": ${link} - ${error.message}`;
+                            liberoScraperErrors.push(errorMessage);
+                            console.warn(errorMessage);
+                        } else {
+                            if (page && !page.isClosed()) {
+                                await page.close();
+                            }
+                            if (browser && browser.connected) {
+                                await browser.close();
+                            }
+                            try {
+                                const session = await refreshBrowser();
+                                browser = session.browser;
+                                page = session.page;
+                            } catch (error) {
+                                console.error(`Errore durante il recupero della sessione: ${error.message}`);
+                                return { liberoScraperNews, liberoScraperErrors };
+                            }
+                            await sleep(3000);
+                        }
+                    }
+                    if (articleSuccess) {
                         try {
-                            await page.goto(link, { waitUntil: 'networkidle2' });
-                            const title = await getTitle(page, 'libero');
-                            const text = await getText(page, 'libero');
-                            const event = determineEvent(query);
-
+                            title = await getTitle(page, 'libero');
+                            const { published, updated } = getDates(page, 'libero');
+                            text = await getText(page, 'libero');
+                            event = determineEvent(query);
+            
                             liberoScraperNews.push({
                                 id: liberoScraperNews.length + 1,
                                 journal: 'libero',
                                 event,
+                                date: updated || published,
                                 title,
                                 text,
                                 link,
                             });
-
-                            consoleSuccess(`Articolo aggiunto da "Libero": ${title}`);
-                            articleSuccess = true;
+    
+                            consoleSuccess(`Articolo aggiunto su "Libero": ${title}`);
+    
                         } catch (error) {
-                            articleAttempts++;
-                            console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "Libero": ${link} - ${error.message}`);
-
-                            if (articleAttempts >= maxRetries) {
-                                const errorMessage = `Errore massimo tentativi raggiunti per articolo su "Libero": ${link} - ${error.message}`;
-                                liberoScraperErrors.push(errorMessage);
-                            } else {
-                                await page.close();
-                                page = await initializePage(browser);
-                                await sleep(3000);
-                            }
+                            console.warn(`Errore durante l'estrazione dei dati per l'articolo su "Libero": ${link} - ${error.message}`);
+                            liberoScraperErrors.push(`Errore nell'estrazione dei dati per l'articolo ${link}: ${error.message}`);
                         }
                     }
                 }
-                pageSuccess = true;
-            } catch (error) {
-                pageAttempts++;
-                console.warn(`Tentativo ${pageAttempts}/${maxRetries} fallito per la pagina ${i} su "Libero": ${error.message}`);
-
-                if (pageAttempts >= maxRetries) {
-                    const errorMessage = `Errore massimo tentativi raggiunti per la pagina ${i} su "Libero": ${error.message}`;
-                    liberoScraperErrors.push(errorMessage);
-                } else {
-                    await page.close();
-                    page = await initializePage(browser);
-                    await sleep(3000);
-                }
             }
+        } catch (error) {
+            const errorMessage = `Errore durante il processamento della pagina ${i} su "Libero": ${error.message}`;
+            liberoScraperErrors.push(errorMessage);
+            console.warn(errorMessage);
+            if (page && !page.isClosed()) {
+                await page.close();
+            }
+            if (browser && browser.connected) {
+                await browser.close();
+            }
+            try {
+                const session = await refreshBrowser();
+                browser = session.browser;
+                page = session.page;
+            } catch (error) {
+                console.error(`Errore durante il recupero della sessione: ${error.message}`);
+                return { liberoScraperNews, liberoScraperErrors };
+            }
+            await sleep(3000); // Attesa prima di riprovare
         }
+        consoleInfo(`Pagina ${i}/${lastPageNumber} su "Libero" processata con successo.`);
     }
 
-    await page.close(); // Chiudi la scheda corrente
+    if (page && !page.isClosed()) {
+        await page.close();
+    }
+
+    if (browser && browser.connected) {
+        await browser.close();
+    }
 
     return { liberoScraperNews, liberoScraperErrors };
 };
@@ -1088,16 +1147,28 @@ const liberoScraper = async (browser, query) => {
         consoleInfo(`Ricerca per query "${userInputs.query}" in corso.. `);
         const queries = userInputs.query.split(',').map((query) => query.trim());
 
-        for (query of queries) {
+        const dateRanges = userInputs.dateRanges.split(',').map((dateRange) => {
+            const [fromDate, toDate] = dateRange.trim().split('/');
+            return {
+                fromDate: fromDate.trim(),
+                toDate: toDate.trim(),
+            };
+        });
+
+        const liberoPageNumbers = userInputs.liberoPageNumbers.split(',').map((query) => parseInt(query.trim()));
+        
+        for (const [index, query] of queries.entries()) {
             const { cdsScraperNews, cdsScraperErrors } = await cdsScaper(userInputs, query);
             allCdsScraperNews.push(cdsScraperNews);
             allCdsScraperErrors[query] = cdsScraperErrors;
-            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(userInputs, query);
+            const dateRange = (dateRanges && dateRanges[index]) || {fromDate: '2024-01-01', toDate: '2025-01-01'};
+            const { repubblicaScraperNews, repubblicaScraperErrors } = await repubblicaScraper(userInputs, query, dateRange);
             allRepubblicaScraperNews.push(repubblicaScraperNews);
             allRepubblicaScraperErrors[query] = repubblicaScraperErrors;
-            // const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(browser, query);
-            // allLiberoScraperNews.push(liberoScraperNews);
-            // allLiberoScraperErrors[query] = liberoScraperErrors;
+            const liberoPageNumber = liberoPageNumbers[index] || 1;
+            const { liberoScraperNews, liberoScraperErrors } = await liberoScraper(query, liberoPageNumber);
+            allLiberoScraperNews.push(liberoScraperNews);
+            allLiberoScraperErrors[query] = liberoScraperErrors;
         }
 
 
