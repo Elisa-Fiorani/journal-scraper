@@ -729,37 +729,222 @@ const repubblicaScraper = async (userInputs, query) => {
     let lastPageNumber = 0;
     let pageFetchSuccess = false;
 
-    // Tentativi per ottenere il numero di pagine
-    while (attempts < maxRetries && !pageFetchSuccess) {
-        try {
-            const url = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
-            await page.goto(url, { waitUntil: 'networkidle2' });
-            await sleep(3000);
+    // Configura gli intervalli di date
+    const startDate = new Date('2023-11-9');
+    const endDate = new Date('2025-01-08');
+    const intervalDays = 1; // Suddividi in intervalli di 100 giorni
 
-            await page.waitForSelector('.pagination', { timeout: 10000 });
+    const dateRanges = [];
+    let currentEndDate = new Date(endDate);
 
-            lastPageNumber = await page.$eval('.pagination p', el => {
-                const match = el.textContent.match(/di\s+(\d+)/);
-                return match ? parseInt(match[1], 10) : 0;
-            });
+    while (currentEndDate > startDate) {
+        const currentStartDate = new Date(currentEndDate);
+        currentStartDate.setDate(currentStartDate.getDate() - intervalDays);
+        if (currentStartDate < startDate) {
+            currentStartDate.setTime(startDate.getTime());
+        }
 
-            if (lastPageNumber > 0) {
-                consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "La Repubblica" per la query "${query}".`);
-            } else {
-                console.warn(`Non sono stati trovati risultati su "La Repubblica" per la query "${query}".`);
+        dateRanges.push({
+            fromDate: currentStartDate.toISOString().split('T')[0],
+            toDate: currentEndDate.toISOString().split('T')[0],
+        });
+
+        // Sposta all'intervallo precedente
+        currentEndDate.setDate(currentEndDate.getDate() - intervalDays - 1);
+    }
+
+    for (const range of dateRanges) {
+        // Tentativi per ottenere il numero di pagine
+        while (attempts < maxRetries && !pageFetchSuccess) {
+            try {
+                const url = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&fromdate=${range.fromDate}&todate=${range.toDate}&sortby=ddate&mode=all`;
+                await page.goto(url, { waitUntil: 'networkidle2' });
+                await sleep(3000);
+
+                await page.waitForSelector('.pagination', { timeout: 10000 });
+
+                lastPageNumber = await page.$eval('.pagination p', el => {
+                    const match = el.textContent.match(/di\s+(\d+)/);
+                    return match ? parseInt(match[1], 10) : 0;
+                });
+
+                if (lastPageNumber > 0) {
+                    consoleSuccess(`Sono state trovate ${lastPageNumber} pagina/e di risultati su "La Repubblica" per la query "${query}" dal ${range.fromDate} al ${range.toDate}.`);
+                } else {
+                    console.warn(`Non sono stati trovati risultati su "La Repubblica" per la query "${query} dal ${range.fromDate} al ${range.toDate}.".`);
+                }
+
+                pageFetchSuccess = true;
+            } catch (error) {
+                attempts++;
+                console.warn(`Tentativo ${attempts}/${maxRetries} fallito per ottenere il numero di pagine su "La Repubblica" dal ${range.fromDate} al ${range.toDate}: ${error.message}`);
+
+                if (attempts >= maxRetries) {
+                    const errorMessage = `Errore massimo tentativi raggiunti per ottenere il numero di pagine su "La Repubblica" dal ${range.fromDate} al ${range.toDate}: ${error.message}`;
+                    repubblicaScraperErrors.push(errorMessage);
+                    console.warn(errorMessage);
+                    return { repubblicaScraperNews, repubblicaScraperErrors };
+                } else {
+                    if (page && !page.isClosed()) {
+                        await page.close();
+                    }
+                    if (browser && browser.connected) {
+                        await browser.close();
+                    }
+                    try {
+                        const session = await refreshBrowserAndLogin(userInputs);
+                        browser = session.browser;
+                        page = session.page;
+                    } catch (refreshError) {
+                        console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                        return { cdsScraperNews, cdsScraperErrors };
+                    }
+                    await sleep(3000); // Attesa prima di riprovare
+                }
             }
+        }
 
-            pageFetchSuccess = true;
-        } catch (error) {
-            attempts++;
-            console.warn(`Tentativo ${attempts}/${maxRetries} fallito per ottenere il numero di pagine su "La Repubblica": ${error.message}`);
+        if (lastPageNumber === 0) return { repubblicaScraperNews, repubblicaScraperErrors };
 
-            if (attempts >= maxRetries) {
-                const errorMessage = `Errore massimo tentativi raggiunti per ottenere il numero di pagine su "La Repubblica": ${error.message}`;
+        consoleInfo(`Ricerco articoli tra ${range.fromDate} e ${range.toDate}...`);
+        // Scraping delle pagine principali e articoli
+        for (let i = 1; i <= lastPageNumber; i++) {
+            const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=${range.fromDate}&todate=${range.toDate}&sortby=ddate&mode=all`;
+
+            try {
+                await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
+                await sleep(2000);
+
+                await page.waitForSelector('#n-risultati', { timeout: 10000 });
+
+                const articles = await page.$$eval('#lista-risultati article h1 a', (anchors) => {
+                    return anchors.map(anchor => {
+                        const article = {
+                            link: anchor.href, // Link all'articolo
+                        };
+        
+                        // Trova il contenitore dell'articolo per cercare le date
+                        const container = anchor.closest('article'); // Assumi che gli articoli siano racchiusi in <article>
+                        if (container) {
+                            // Cerca le date in "aside.correlati"
+                            const correlati = container.querySelector('aside.correlati a time');
+                            const correlatiExtra = container.querySelector('aside.correlati-extra a time');
+                            let date;
+        
+                            if (correlati) {
+                                date = correlati.textContent.trim();
+                            }
+        
+                            if (correlatiExtra) {
+                                date = correlatiExtra.textContent.trim();
+                            }
+        
+                            // Aggiungi tutte le date trovate
+                            article.date = date;
+                        }
+        
+                        return article;
+                    });
+                });
+
+                consoleInfo(`Trovati ${Object.keys(articles).length} articoli nella pagina ${i} su "La Repubblica".`);
+
+                for (const article of articles) {
+                    let articleAttempts = 0;
+                    let articleFetchSuccess = false;
+                    let title, text, event;
+
+                    while (articleAttempts < maxRetries && !articleFetchSuccess) {
+                        try {
+                            await page.goto(article.link, { waitUntil: 'networkidle2' });
+                            await sleep(2000);
+
+                            await page.waitForSelector('h1', { timeout: 10000 });
+
+                            // Controlla se esiste il link "Log In"
+                            const loginPresent = await page.evaluate(() => {
+                                const loginElement = document.querySelector('a.dropdown-item[href="/mma"]');
+                                return !!loginElement;
+                            });
+                            
+                            if (loginPresent) {
+                                if (page && !page.isClosed()) {
+                                    await page.close();
+                                }
+                                if (browser && browser.connected) {
+                                    await browser.close();
+                                }
+                                try {
+                                    const session = await refreshBrowserAndLogin(userInputs);
+                                    browser = session.browser;
+                                    page = session.page;
+                                    // Ripeti il caricamento della stessa pagina dopo il login
+                                    await page.goto(article.link, { waitUntil: 'networkidle2' });
+                                    await sleep(2000);
+                                    await page.waitForSelector('h1', { timeout: 10000 });
+                                } catch (refreshError) {
+                                    console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                                    throw new Error(`Recupero sessione fallito per ${article.link}: ${refreshError.message}`);
+                                }
+                                await sleep(3000); // Attesa prima di riprovare
+                            }
+
+                            articleFetchSuccess = true;
+                        } catch (error) {
+                            articleAttempts++;
+                            console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "La Repubblica": ${article.link} - ${error.message}`);
+
+                            if (articleAttempts >= maxRetries) {
+                                const errorMessage = `Errore massimo tentativi raggiunti per articolo su "La Repubblica": ${article.link} - ${error.message}`;
+                                repubblicaScraperErrors.push(errorMessage);
+                                console.warn(errorMessage);
+                            } else {
+                                if (page && !page.isClosed()) {
+                                    await page.close();
+                                }
+                                if (browser && browser.connected) {
+                                    await browser.close();
+                                }
+                                try {
+                                    const session = await refreshBrowserAndLogin(userInputs);
+                                    browser = session.browser;
+                                    page = session.page;
+                                } catch (refreshError) {
+                                    console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
+                                    return { cdsScraperNews, cdsScraperErrors };
+                                }
+                                await sleep(3000); // Attesa prima di riprovare
+                            }
+                        }
+                        if (articleFetchSuccess) {
+                            try {
+                                title = await getTitle(page, 'repubblica');
+                                const { published, updated } = extractDates(article.date);
+                                text = await getText(page, 'repubblica');
+                                event = determineEvent(query);
+        
+                                repubblicaScraperNews.push({
+                                    id: repubblicaScraperNews.length + 1,
+                                    journal: 'repubblica',
+                                    event,
+                                    date: updated || published,
+                                    title,
+                                    text,
+                                    link: article.link,
+                                });
+        
+                                consoleSuccess(`Articolo aggiunto su "La Repubblica": ${title}`);
+                            } catch (error) {
+                                console.warn(`Errore durante l'estrazione dei dati per l'articolo su "La Repubblica": ${article.link} - ${error.message}`);
+                                repubblicaScraperErrors.push(`Errore nell'estrazione dei dati per l'articolo ${article.link}: ${error.message}`);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                const errorMessage = `Errore durante il processamento della pagina ${i} su "La Repubblica": ${error.message}`;
                 repubblicaScraperErrors.push(errorMessage);
                 console.warn(errorMessage);
-                return { repubblicaScraperNews, repubblicaScraperErrors };
-            } else {
                 if (page && !page.isClosed()) {
                     await page.close();
                 }
@@ -776,164 +961,9 @@ const repubblicaScraper = async (userInputs, query) => {
                 }
                 await sleep(3000); // Attesa prima di riprovare
             }
+
+            consoleInfo(`Pagina ${i}/${lastPageNumber} su "La Repubblica" processata con successo.`);
         }
-    }
-
-    if (lastPageNumber === 0) return { repubblicaScraperNews, repubblicaScraperErrors };
-
-    // Scraping delle pagine principali e articoli
-    for (let i = 1; i <= lastPageNumber; i++) {
-        const urlWithPage = `https://ricerca.repubblica.it/ricerca/repubblica?query=${query}&page=${i}&fromdate=2000-01-01&todate=2025-01-06&sortby=ddate&mode=all`;
-
-        try {
-            await page.goto(urlWithPage, { waitUntil: 'networkidle2' });
-            await sleep(2000);
-
-            await page.waitForSelector('#lista-risultati', { timeout: 10000 });
-
-            const links = await page.$$eval('#lista-risultati article h1 a', anchors =>
-                anchors.map(anchor => anchor.href)
-            );
-
-            const articles = await page.$$eval('#lista-risultati article h1 a', (anchors) => {
-                return anchors.map(anchor => {
-                    const article = {
-                        link: anchor.href, // Link all'articolo
-                    };
-    
-                    // Trova il contenitore dell'articolo per cercare le date
-                    const container = anchor.closest('article'); // Assumi che gli articoli siano racchiusi in <article>
-                    if (container) {
-                        // Cerca le date in "aside.correlati"
-                        const correlati = container.querySelector('aside.correlati a time');
-                        const correlatiExtra = container.querySelector('aside.correlati-extra a time');
-                        let date;
-    
-                        if (correlati) {
-                            date = correlati.textContent.trim();
-                        }
-    
-                        if (correlatiExtra) {
-                            date = correlatiExtra.textContent.trim();
-                        }
-    
-                        // Aggiungi tutte le date trovate
-                        article.date = date;
-                    }
-    
-                    return article;
-                });
-            });
-
-            consoleInfo(`Trovati ${Object.keys(articles).length} articoli nella pagina ${i} su "La Repubblica".`);
-
-            for (const article of articles) {
-                let articleAttempts = 0;
-                let articleFetchSuccess = false;
-                let title, text, event;
-
-                while (articleAttempts < maxRetries && !articleFetchSuccess) {
-                    try {
-                        await page.goto(article.link, { waitUntil: 'networkidle2' });
-                        await sleep(2000);
-
-                        await page.waitForSelector('h1', { timeout: 10000 });
-
-                        // Controlla se esiste il link "Log In"
-                        const loginPresent = await page.evaluate(() => {
-                            const loginElement = document.querySelector('a.dropdown-item[href="/mma"]');
-                            return !!loginElement;
-                        });
-                        
-                        if (loginPresent) {
-                            try {
-                                const session = await refreshBrowserAndLogin(userInputs);
-                                browser = session.browser;
-                                page = session.page;
-                                // Ripeti il caricamento della stessa pagina dopo il login
-                                await page.goto(article.link, { waitUntil: 'networkidle2' });
-                                await page.waitForTimeout(2000);
-                            } catch (refreshError) {
-                                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
-                                return { cdsScraperNews, cdsScraperErrors };
-                            }
-                            await sleep(3000); // Attesa prima di riprovare
-                        }
-
-                        articleFetchSuccess = true;
-                    } catch (error) {
-                        articleAttempts++;
-                        console.warn(`Tentativo ${articleAttempts}/${maxRetries} fallito per articolo su "La Repubblica": ${article.link} - ${error.message}`);
-
-                        if (articleAttempts >= maxRetries) {
-                            const errorMessage = `Errore massimo tentativi raggiunti per articolo su "La Repubblica": ${article.link} - ${error.message}`;
-                            repubblicaScraperErrors.push(errorMessage);
-                            console.warn(errorMessage);
-                        } else {
-                            if (page && !page.isClosed()) {
-                                await page.close();
-                            }
-                            if (browser && browser.connected) {
-                                await browser.close();
-                            }
-                            try {
-                                const session = await refreshBrowserAndLogin(userInputs);
-                                browser = session.browser;
-                                page = session.page;
-                            } catch (refreshError) {
-                                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
-                                return { cdsScraperNews, cdsScraperErrors };
-                            }
-                            await sleep(3000); // Attesa prima di riprovare
-                        }
-                    }
-                    if (articleFetchSuccess) {
-                        try {
-                            title = await getTitle(page, 'repubblica');
-                            const { published, updated } = await extractDates(article.date);
-                            text = await getText(page, 'repubblica');
-                            event = determineEvent(query);
-    
-                            repubblicaScraperNews.push({
-                                id: repubblicaScraperNews.length + 1,
-                                journal: 'repubblica',
-                                event,
-                                date: updated || published,
-                                title,
-                                text,
-                                link: article.link,
-                            });
-    
-                            consoleSuccess(`Articolo aggiunto su "La Repubblica": ${title}`);
-                        } catch (error) {
-                            console.warn(`Errore durante l'estrazione dei dati per l'articolo su "La Repubblica": ${article.link} - ${error.message}`);
-                            repubblicaScraperErrors.push(`Errore nell'estrazione dei dati per l'articolo ${article.link}: ${error.message}`);
-                        }
-                    }
-                }
-            }
-        } catch (error) {
-            const errorMessage = `Errore durante il processamento della pagina ${i} su "La Repubblica": ${error.message}`;
-            repubblicaScraperErrors.push(errorMessage);
-            console.warn(errorMessage);
-            if (page && !page.isClosed()) {
-                await page.close();
-            }
-            if (browser && browser.connected) {
-                await browser.close();
-            }
-            try {
-                const session = await refreshBrowserAndLogin(userInputs);
-                browser = session.browser;
-                page = session.page;
-            } catch (refreshError) {
-                console.error(`Errore durante il recupero della sessione: ${refreshError.message}`);
-                return { cdsScraperNews, cdsScraperErrors };
-            }
-            await sleep(3000); // Attesa prima di riprovare
-        }
-
-        consoleInfo(`Pagina ${i}/${lastPageNumber} su "La Repubblica" processata con successo.`);
     }
 
     if (page && !page.isClosed()) {
